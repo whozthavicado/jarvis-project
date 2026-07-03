@@ -2,7 +2,7 @@ import pytest
 
 from jarvis.config import Settings, get_settings
 from jarvis.llm.factory import build_provider
-from jarvis.llm.providers import AnthropicProvider, OpenRouterProvider
+from jarvis.llm.providers import AnthropicProvider, NvidiaProvider, OpenRouterProvider
 
 
 def test_builds_anthropic_provider_for_anthropic_tier():
@@ -17,6 +17,13 @@ def test_builds_openrouter_provider_for_openrouter_tier():
     provider = build_provider(get_settings(), "t1_simple")
     assert isinstance(provider, OpenRouterProvider)
     assert provider.model == "google/gemma-4-31b-it:free"
+    assert provider.max_tokens == 1024
+
+
+def test_builds_nvidia_provider_for_nvidia_tier():
+    provider = build_provider(get_settings(), "t1_simple_nvidia")
+    assert isinstance(provider, NvidiaProvider)
+    assert provider.model == "meta/llama-3.1-8b-instruct"
     assert provider.max_tokens == 1024
 
 

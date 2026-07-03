@@ -40,15 +40,25 @@ tts:
 # the "simple" tier's backend before this decision) -- Haiku's remaining job
 # is the M2 routing classifier below. Model ID verified live against
 # OpenRouter's catalog (google/gemma-4-31b-it:free); that catalog rotates
-# with little notice, which is exactly why t1_simple has a paid fallback.
+# with little notice, which is exactly why t1_simple has a fallback chain.
 #
-# t2_medium/t3_complex are configured but not yet wired to a Layer B prompt
-# or usable via Session/LLMClient -- that lands with later milestones
-# (M4 tools, M3-full fallback ladder) per ARCHITECTURE.md §8.
+# t1_simple_nvidia is a second, independent free option -- NVIDIA NIM's
+# hosted catalog (build.nvidia.com), also free with rate limits. It's a pure
+# fallback target, never the router's initially-resolved tier, so it doesn't
+# need its own Layer B prompt file (LLMClient reuses whatever system_prompt
+# the caller resolved for the *original* tier across every hop in the
+# chain -- see jarvis/llm/client.py). Model ID not yet live-verified in this
+# environment (no NVIDIA_API_KEY here) -- confirmed via NVIDIA's own docs as
+# a real catalog entry; re-check against your account's available models if
+# it's been a while.
 models:
   t1_simple:
     provider: openrouter
     model: "google/gemma-4-31b-it:free"
+    max_tokens: 1024
+  t1_simple_nvidia:
+    provider: nvidia
+    model: "meta/llama-3.1-8b-instruct"
     max_tokens: 1024
   t1_standard:
     provider: anthropic
@@ -74,14 +84,19 @@ models:
 # failure is transient -- see jarvis/llm/fallbacks.py's is_transient), try
 # this other tier's provider instead. jarvis/llm/client.py walks this map
 # repeatedly (fallback_chain), so a tier can degrade through more than one
-# hop -- t3_complex -> t2_medium -> t1_standard mirrors ARCHITECTURE.md
-# §5.1's Fable -> Opus -> Sonnet degrade-under-load ladder; t1_simple ->
-# t1_standard is a different kind of hop (an *upgrade*, not a degrade --
-# OpenRouter's free tier is flaky/rotates, Sonnet is the reliable backstop).
+# hop:
+#   t1_simple -> t1_simple_nvidia -> t1_standard
+#     Two independent free catalogs (OpenRouter, then NVIDIA NIM) before
+#     ever touching paid Sonnet -- an *upgrade* ladder, not a degrade one:
+#     both free tiers are flaky/rotate, Sonnet is the reliable backstop.
+#   t3_complex -> t2_medium -> t1_standard
+#     Mirrors ARCHITECTURE.md §5.1's Fable -> Opus -> Sonnet degrade-under-
+#     load ladder.
 # A per-tier circuit breaker (3 consecutive failures -> 5 min cooldown)
 # skips a tripped tier without even trying it.
 fallbacks:
-  t1_simple: t1_standard
+  t1_simple: t1_simple_nvidia
+  t1_simple_nvidia: t1_standard
   t3_complex: t2_medium
   t2_medium: t1_standard
 

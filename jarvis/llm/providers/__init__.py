@@ -8,6 +8,13 @@ from __future__ import annotations
 
 from .anthropic_provider import AnthropicProvider
 from .base import Provider
+from .nvidia_provider import NvidiaProvider
 from .openrouter_provider import OpenRouterError, OpenRouterProvider
 
-__all__ = ["Provider", "AnthropicProvider", "OpenRouterProvider", "OpenRouterError"]
+__all__ = [
+    "Provider",
+    "AnthropicProvider",
+    "OpenRouterProvider",
+    "OpenRouterError",
+    "NvidiaProvider",
+]

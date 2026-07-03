@@ -144,12 +144,13 @@ async def test_circuit_breaker_trips_after_three_failures_and_skips_primary():
     assert primary.calls == 3  # unchanged -- primary was never called this time
 
 
-def test_t1_simple_resolves_configured_fallback_chain_to_t1_standard():
-    from jarvis.llm.providers import AnthropicProvider, OpenRouterProvider
+def test_t1_simple_resolves_configured_fallback_chain_through_nvidia_to_t1_standard():
+    from jarvis.llm.providers import AnthropicProvider, NvidiaProvider, OpenRouterProvider
 
     client = LLMClient(get_settings(), tier="t1_simple", circuit_breaker=CircuitBreaker())
-    assert client._chain == ["t1_simple", "t1_standard"]
+    assert client._chain == ["t1_simple", "t1_simple_nvidia", "t1_standard"]
     assert isinstance(client._providers["t1_simple"], OpenRouterProvider)
+    assert isinstance(client._provider_for("t1_simple_nvidia"), NvidiaProvider)
     assert isinstance(client._provider_for("t1_standard"), AnthropicProvider)
     assert client._provider_for("t1_standard").model == "claude-sonnet-5"
 

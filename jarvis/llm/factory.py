@@ -1,14 +1,14 @@
 """Tier -> Provider instance. The one place provider choice is decided.
 
 Everything else in the codebase (Session, LLMClient's callers) talks to the
-Provider interface; switching a tier between Anthropic and OpenRouter is a
+Provider interface; switching a tier between Anthropic/OpenRouter/NVIDIA is a
 ``config/settings.yaml`` edit, not a code change (that's the whole point of
 this module existing).
 """
 from __future__ import annotations
 
 from jarvis.config import Settings
-from jarvis.llm.providers import AnthropicProvider, OpenRouterProvider, Provider
+from jarvis.llm.providers import AnthropicProvider, NvidiaProvider, OpenRouterProvider, Provider
 
 _BUILDERS = {
     "anthropic": lambda cfg: AnthropicProvider(
@@ -17,6 +17,10 @@ _BUILDERS = {
         effort=str(cfg.get("effort", "medium")),
     ),
     "openrouter": lambda cfg: OpenRouterProvider(
+        model=str(cfg.model),
+        max_tokens=int(cfg.get("max_tokens", 1024)),
+    ),
+    "nvidia": lambda cfg: NvidiaProvider(
         model=str(cfg.model),
         max_tokens=int(cfg.get("max_tokens", 1024)),
     ),

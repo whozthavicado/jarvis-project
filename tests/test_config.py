@@ -24,9 +24,10 @@ def test_model_ids_present():
     assert s.models.router.model == "claude-haiku-4-5"
 
 
-def test_t1_simple_falls_back_to_t1_standard():
+def test_t1_simple_falls_back_through_nvidia_to_t1_standard():
     s = get_settings()
-    assert s.fallbacks.t1_simple == "t1_standard"
+    assert s.fallbacks.t1_simple == "t1_simple_nvidia"
+    assert s.fallbacks.t1_simple_nvidia == "t1_standard"
 
 
 def test_get_with_default():
