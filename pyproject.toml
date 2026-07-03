@@ -9,6 +9,7 @@ dependencies = [
     "webrtcvad-wheels>=2.0.14",  # prebuilt VAD wheels (import name: webrtcvad)
     "httpx>=0.27",          # whisper-server HTTP client
     "pyyaml>=6.0",          # settings/grammar
+    "anthropic>=0.110",     # Claude API (streaming chat)
 ]
 
 [project.optional-dependencies]
@@ -19,6 +20,7 @@ dev = [
 
 [project.scripts]
 jarvis-m1 = "scripts.milestone1:main"
+jarvis-m2 = "scripts.milestone2:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -29,4 +31,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["jarvis", "jarvis.audio", "jarvis.speech"]
+packages = ["jarvis", "jarvis.audio", "jarvis.speech", "jarvis.llm", "jarvis.core"]
+
+[tool.setuptools.package-data]
+"jarvis.llm" = ["prompts/*.md"]
