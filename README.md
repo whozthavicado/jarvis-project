@@ -12,20 +12,39 @@ a mic-buffer overflow during transcription, and whisper's `[BLANK_AUDIO]`-style
 silence markers leaking past the hallucination guard.
 
 **Milestone 2 — real conversation** (in place): the echo is replaced with an
-actual streaming reply from Sonnet 5, with conversation history carried across
-turns. Single model only — no routing, tools, or memory yet (those are later
-milestones per ARCHITECTURE.md §8). The layered system prompt (frozen identity
-core + per-tier addendum, cached; dynamic datetime context in `messages`) is
-implemented as designed in ARCHITECTURE.md §3.
+actual streaming reply, with conversation history carried across turns. The
+layered system prompt (frozen identity core + per-tier addendum; dynamic
+datetime context in the conversation, not the system prompt) is implemented
+as designed in ARCHITECTURE.md §3.
+
+**Multi-provider (in place):** `jarvis/llm` now supports more than one model
+backend behind the same interface. After researching OpenRouter's free tier
+(quality, rate limits, catalog stability — see the provider-strategy decision
+from 2026-07-02), the **simple tier (`t1_simple`) routes to OpenRouter's free
+Gemma 4 31B** ($0 marginal cost), while the **standard/medium tier
+(`t1_standard`) stays on Sonnet 5** (paid) — free-model tool-calling
+reliability is untested and the medium tier is cheap anyway. Complex-tier
+work (Opus/Fable) stays paid Anthropic as originally planned; those tiers
+aren't wired up yet regardless (later milestones). Switching a tier's
+provider or model is a `config/settings.yaml` edit (`models.<tier>`), never a
+code change — see `jarvis/llm/factory.py`. Because free-tier model catalogs
+rotate with little notice (verified live: some entries expire within days),
+`t1_simple` has an automatic same-turn fallback to `t1_standard` — but only
+when nothing has been spoken yet, so a mid-stream failure never produces
+garbled double-speech (see `jarvis/llm/client.py`).
 
 Modules delivered: `jarvis/audio` (M1), `jarvis/speech` (M6), `jarvis/config`,
-`jarvis/llm` (M3 minimal), `jarvis/core` (session + orchestrator loop).
+`jarvis/llm` (M3 minimal, multi-provider), `jarvis/core` (session + orchestrator
+loop).
 
-**Not yet live-tested against the real API** — no Anthropic credentials are
-configured in this dev environment. Everything below `--check` is verified by
-a mocked test suite (49 tests, built from the real SDK's own event/message
-types); run `--check` yourself once you have credentials to confirm the live
-path.
+**Not yet live-tested against a real API** — no Anthropic *or* OpenRouter
+credentials are configured in this dev environment. Everything is verified by
+a test suite (69 tests) built from real wire formats: Anthropic's own SDK
+types for the Anthropic provider, and `httpx.MockTransport` (httpx's own
+supported no-network testing mechanism) for the OpenRouter provider's SSE
+streaming. Run `--check --tier <tier>` yourself once you have credentials —
+it talks to that tier's provider directly, bypassing the fallback, so a
+failure always tells you about the tier you asked about.
 
 ## Setup
 
@@ -56,13 +75,19 @@ python -m scripts.milestone1               # live: speak, pause, hear it echoed
 
 ### Try Milestone 2
 
-Needs `ANTHROPIC_API_KEY` set (or an `ant auth login` profile active) in
-addition to everything Milestone 1 needs:
+Needs credentials for whichever tier's provider you're using, in addition to
+everything Milestone 1 needs:
+- `t1_standard` (Sonnet 5, default): `ANTHROPIC_API_KEY` set, or an
+  `ant auth login` profile active.
+- `t1_simple` (OpenRouter free): `OPENROUTER_API_KEY` set — get one at
+  [openrouter.ai/keys](https://openrouter.ai/keys).
 
 ```bash
-python -m scripts.milestone2 --check       # one call: do credentials work?
-python -m scripts.milestone2 --text        # type a conversation (no mic needed)
-python -m scripts.milestone2               # live: speak, hear Sonnet 5 reply
+python -m scripts.milestone2 --check                    # Sonnet 5: do credentials work?
+python -m scripts.milestone2 --check --tier t1_simple    # OpenRouter free: do credentials work?
+python -m scripts.milestone2 --text                      # type a conversation (no mic needed)
+python -m scripts.milestone2 --tier t1_simple            # live, on the free tier
+python -m scripts.milestone2                              # live, on Sonnet 5 (default)
 ```
 
 ## Tests
@@ -76,16 +101,19 @@ pytest
 ## Layout
 
 ```
-config/settings.yaml     model IDs, tiers, audio/VAD/TTS params, budgets
+config/settings.yaml     tiers (provider + model + fallback), audio/VAD/TTS params, budgets
 jarvis/config.py         dotted-access settings loader
-jarvis/audio/            M1: capture, vad, transcriber, pipeline (transcripts())
-jarvis/speech/           M6: sentence-buffered TTS (Speaker)
-jarvis/llm/              M3 minimal: streaming client, layered system prompts
-jarvis/core/             session (history + context) + the listen/reply/speak loop
+jarvis/audio/             M1: capture, vad, transcriber, pipeline (transcripts())
+jarvis/speech/            M6: sentence-buffered TTS (Speaker)
+jarvis/llm/client.py     tier-aware facade: picks a provider, streams, same-turn fallback
+jarvis/llm/factory.py    tier -> Provider instance (the only place provider choice is decided)
+jarvis/llm/providers/    AnthropicProvider, OpenRouterProvider -- same interface, swappable
+jarvis/llm/prompts.py    layered system prompt (Layer A frozen + Layer B per-tier)
+jarvis/core/              session (history + context) + the listen/reply/speak loop
 scripts/milestone1.py    the hear->transcribe->speak demo
-scripts/milestone2.py    the real-conversation demo (--check / --text / live)
+scripts/milestone2.py    the real-conversation demo (--check / --text / live / --tier)
 scripts/start_whisper_server.sh
-tests/                   mirrors jarvis/
+tests/                    mirrors jarvis/
 ```
 
 Next: T0 local command grammar + first tools (M4), then routing across tiers

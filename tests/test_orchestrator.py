@@ -8,7 +8,8 @@ import anthropic
 from jarvis.audio.types import Transcript
 from jarvis.core.orchestrator import _fallback_text_for, handle_turn
 from jarvis.core.session import Session
-from jarvis.llm.types import TurnResult
+from jarvis.llm.providers import OpenRouterError
+from jarvis.llm.types import ChatMessage, TurnResult
 
 
 def _req() -> httpx.Request:
@@ -27,8 +28,8 @@ class _StubLLM:
         self._error = error
         self.calls = []
 
-    async def stream_reply(self, system_blocks, messages, on_text):
-        self.calls.append((system_blocks, messages))
+    async def stream_reply(self, system_prompt, messages, on_text):
+        self.calls.append((system_prompt, messages))
         if self._error is not None:
             raise self._error
         if self._result.text:  # a real stream emits no deltas for empty content
@@ -42,7 +43,7 @@ def _ok_result(text="Hello there.") -> TurnResult:
 
 @pytest.mark.asyncio
 async def test_successful_turn_updates_session_and_streams_text():
-    session = Session(tier="sonnet")
+    session = Session(tier="t1_standard")
     llm = _StubLLM(result=_ok_result("Hi, how can I help?"))
     seen = []
 
@@ -52,13 +53,13 @@ async def test_successful_turn_updates_session_and_streams_text():
     assert seen == ["Hi, how can I help?"]
     # user turn + assistant turn both landed in history
     assert len(session.history) == 2
-    assert session.history[0]["role"] == "user"
-    assert session.history[1] == {"role": "assistant", "content": "Hi, how can I help?"}
+    assert session.history[0].role == "user"
+    assert session.history[1] == ChatMessage(role="assistant", text="Hi, how can I help?")
 
 
 @pytest.mark.asyncio
 async def test_failed_turn_speaks_fallback_and_leaves_no_assistant_turn():
-    session = Session(tier="sonnet")
+    session = Session(tier="t1_standard")
     llm = _StubLLM(error=anthropic.APIConnectionError(request=_req()))
     seen = []
 
@@ -68,12 +69,12 @@ async def test_failed_turn_speaks_fallback_and_leaves_no_assistant_turn():
     assert len(seen) == 1 and "reach the cloud" in seen[0]
     # user turn is preserved (so context isn't lost), no assistant reply added
     assert len(session.history) == 1
-    assert session.history[0]["role"] == "user"
+    assert session.history[0].role == "user"
 
 
 @pytest.mark.asyncio
 async def test_refusal_speaks_a_generic_decline_but_result_is_returned():
-    session = Session(tier="sonnet")
+    session = Session(tier="t1_standard")
     llm = _StubLLM(result=TurnResult(text="", model="claude-sonnet-5", stop_reason="refusal"))
     seen = []
 
@@ -93,6 +94,7 @@ async def test_refusal_speaks_a_generic_decline_but_result_is_returned():
         (anthropic.RateLimitError("slow down", response=_resp(429), body=None), "rate limited"),
         (anthropic.APIConnectionError(request=_req()), "reach the cloud"),
         (anthropic.APIStatusError("boom", response=_resp(500), body=None), "server side"),
+        (OpenRouterError("free model unavailable"), "free model backend"),
         (ValueError("unexpected bug"), "try that again"),
     ],
 )

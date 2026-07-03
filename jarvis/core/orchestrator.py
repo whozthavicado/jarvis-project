@@ -1,12 +1,13 @@
-"""M3-minimal main loop: listen -> Sonnet 5 (streaming) -> speak.
+"""Main loop: listen -> LLM (streaming, tier-selected) -> speak.
 
-This is the first end-to-end voice *conversation* (ARCHITECTURE.md §8 step 2)
-— unlike Milestone 1's echo, replies come from the model and conversation
-history accumulates across turns. Still single-tier (Sonnet 5 only): no
-routing (M2), no tools (M4), no memory (M5), no fallback ladder (M3 full).
+This is still single-tier per session (no automatic routing yet — that's the
+M2 module, a later milestone): the caller picks a tier for the whole
+conversation. What's new since Milestone 2's first cut is that a tier's
+provider is no longer hardcoded to Anthropic — see jarvis/llm/factory.py.
 A failed turn degrades to a spoken apology and the loop keeps listening
-rather than crashing the whole session — the full error taxonomy from
-ARCHITECTURE.md §5 lands with the fallback ladder in a later milestone.
+rather than crashing the whole session; LLMClient itself may have already
+tried a same-turn fallback (e.g. OpenRouter free -> Sonnet 5) before this
+code ever sees an exception — see jarvis/llm/client.py.
 """
 from __future__ import annotations
 
@@ -23,6 +24,8 @@ def _fallback_text_for(exc: Exception) -> str:
     """Map an LLM-call failure to a short, speakable apology."""
     import anthropic
 
+    from jarvis.llm.providers import OpenRouterError
+
     if isinstance(exc, anthropic.AuthenticationError):
         return "I can't reach Claude — my API credentials aren't set up."
     if isinstance(exc, anthropic.PermissionDeniedError):
@@ -33,6 +36,8 @@ def _fallback_text_for(exc: Exception) -> str:
         return "I can't reach the cloud right now."
     if isinstance(exc, anthropic.APIStatusError):
         return "Something went wrong on the server side. Let's try that again."
+    if isinstance(exc, OpenRouterError):
+        return "My free model backend had trouble with that. Let's try again."
     return "Something went wrong there. Let's try that again."
 
 
@@ -50,7 +55,7 @@ async def handle_turn(
     """
     session.add_user_turn(transcript.text)
     try:
-        result = await llm.stream_reply(session.system_blocks, session.messages, on_text)
+        result = await llm.stream_reply(session.system_prompt, session.messages, on_text)
     except Exception as exc:  # noqa: BLE001 - deliberately broad; see _fallback_text_for
         on_text(_fallback_text_for(exc))
         return None
@@ -65,20 +70,22 @@ async def handle_turn(
 
 async def converse(
     settings: Optional[Settings] = None,
-    tier: str = "sonnet",
+    tier: str = "t1_standard",
     on_turn: Optional[Callable[[Transcript, Optional[TurnResult]], None]] = None,
 ) -> None:
     """Run the live listen -> reply -> speak loop until cancelled.
 
     Args:
         settings: override settings (defaults to global config).
-        tier: which Layer B addendum to use (only "sonnet" exists so far).
+        tier: which configured tier to converse on (see
+            config/settings.yaml -> models). No automatic routing between
+            tiers yet — that's a later milestone.
         on_turn: optional callback fired after each turn (transcript, result)
             for logging/printing; result is None if the turn errored.
     """
     s = settings or get_settings()
     session = Session(tier=tier)
-    llm = LLMClient(s)
+    llm = LLMClient(s, tier=tier)
 
     async with Speaker(s) as speaker:
         async for t in transcripts(s):

@@ -1,7 +1,18 @@
-"""Shared LLM value types."""
+"""Shared LLM value types.
+
+``ChatMessage`` is deliberately provider-agnostic: plain role + text, no
+Anthropic-specific content blocks or cache_control. Each Provider translates
+it into its own wire format internally (see jarvis/llm/providers/).
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ChatMessage:
+    role: str  # "user" | "assistant"
+    text: str
 
 
 @dataclass(frozen=True)

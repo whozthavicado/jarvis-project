@@ -14,11 +14,19 @@ def test_dotted_and_mapping_access_agree():
 
 def test_model_ids_present():
     s = get_settings()
-    # Router + all four tiers wired up.
-    assert s.models.t1_simple == "claude-haiku-4-5"
-    assert s.models.t1_standard == "claude-sonnet-5"
-    assert s.models.t2_medium == "claude-opus-4-8"
-    assert s.models.t3_complex == "claude-fable-5"
+    # Each tier now names a provider + model (see jarvis/llm/factory.py).
+    assert s.models.t1_simple.provider == "openrouter"
+    assert s.models.t1_simple.model == "google/gemma-4-31b-it:free"
+    assert s.models.t1_standard.provider == "anthropic"
+    assert s.models.t1_standard.model == "claude-sonnet-5"
+    assert s.models.t2_medium.model == "claude-opus-4-8"
+    assert s.models.t3_complex.model == "claude-fable-5"
+    assert s.models.router.model == "claude-haiku-4-5"
+
+
+def test_t1_simple_falls_back_to_t1_standard():
+    s = get_settings()
+    assert s.fallbacks.t1_simple == "t1_standard"
 
 
 def test_get_with_default():

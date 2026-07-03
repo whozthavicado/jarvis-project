@@ -1,7 +1,7 @@
 """System prompt assembly (ARCHITECTURE.md §3).
 
 Two frozen layers live on disk as ``.md`` files and are combined into one
-cacheable system block:
+plain-text system prompt:
 
     Layer A (``layer_a.md``)  — identity core, IDENTICAL across every model
                                  tier, forever. Do not edit casually: once
@@ -9,19 +9,23 @@ cacheable system block:
                                  byte change invalidates the prompt cache for
                                  every session using it (see
                                  shared/prompt-caching.md — prefix match).
-    Layer B (``layer_b_<tier>.md``) — small per-model behavior addendum. Safe
-                                 to evolve as capabilities (tools, routing)
-                                 come online in later milestones.
+                                 Caching itself is Anthropic-specific and is
+                                 applied by AnthropicProvider, not here — this
+                                 module only returns plain text so any
+                                 provider can use it.
+    Layer B (``layer_b_<tier>.md``) — small per-tier behavior addendum,
+                                 named after the settings.yaml tier key (e.g.
+                                 "t1_simple", "t1_standard"). Safe to evolve
+                                 as capabilities (tools, routing) come online.
 
 Layer C (dynamic context — datetime, memory digest, recall) is intentionally
-*not* handled here: it changes every turn and belongs in ``messages``, not
-``system``, so editing it never invalidates the Layer A+B cache. See
-``jarvis/core/session.py``.
+*not* handled here: it changes every turn and belongs in the conversation
+messages, not the system prompt, so editing it never invalidates the Layer
+A+B cache. See jarvis/core/session.py.
 """
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List
 
 _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
@@ -36,21 +40,15 @@ def load_layer_a() -> str:
 
 
 def load_layer_b(tier: str) -> str:
-    """The per-tier addendum, e.g. ``load_layer_b("sonnet")``."""
+    """The per-tier addendum, e.g. ``load_layer_b("t1_standard")``."""
     return _read(f"layer_b_{tier}.md")
 
 
-def build_system_blocks(tier: str) -> List[Dict]:
-    """Build the ``system`` parameter: one cached block of Layer A + Layer B.
+def build_system_prompt(tier: str) -> str:
+    """Layer A + Layer B, combined into the plain-text system prompt.
 
-    A single block (not two) so there is exactly one cache breakpoint on the
-    combined, stable prefix — see shared/prompt-caching.md placement patterns.
+    Provider-agnostic on purpose: AnthropicProvider wraps this in a cached
+    content block; OpenRouterProvider sends it as a plain system-role
+    message. Neither Anthropic-specific formatting nor caching belongs here.
     """
-    text = load_layer_a() + "\n\n" + load_layer_b(tier)
-    return [
-        {
-            "type": "text",
-            "text": text,
-            "cache_control": {"type": "ephemeral"},
-        }
-    ]
+    return load_layer_a() + "\n\n" + load_layer_b(tier)

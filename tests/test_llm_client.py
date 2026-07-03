@@ -1,145 +1,113 @@
-"""LLMClient tests — a fake Anthropic client built from the real SDK's own
-event/message types, so the fake can't silently drift from the real shape.
-No network or credentials required.
+"""LLMClient tests — tier -> provider selection and the same-turn fallback,
+using simple stub Provider objects (not a real SDK). AnthropicProvider and
+OpenRouterProvider each have their own dedicated test file; this one is
+about LLMClient's own logic: picking a provider and, if configured, falling
+back to another one — but only when it's safe to do so.
 """
 import pytest
-from anthropic.types.message import Message
-from anthropic.types.text_block import TextBlock
-from anthropic.types.usage import Usage
-from anthropic.types.raw_content_block_delta_event import RawContentBlockDeltaEvent
-from anthropic.types.text_delta import TextDelta
-from anthropic.types.thinking_delta import ThinkingDelta
 
+from jarvis.config import get_settings
 from jarvis.llm.client import LLMClient
+from jarvis.llm.types import ChatMessage, TurnResult
 
 
-def _text_delta_event(text: str, index: int = 0) -> RawContentBlockDeltaEvent:
-    return RawContentBlockDeltaEvent(
-        type="content_block_delta", index=index, delta=TextDelta(type="text_delta", text=text)
-    )
+class _StubProvider:
+    def __init__(self, result: TurnResult = None, error: Exception = None):
+        self._result = result
+        self._error = error
+        self.calls = 0
+
+    async def stream_reply(self, system_prompt, messages, on_text):
+        self.calls += 1
+        if self._error is not None:
+            raise self._error
+        if self._result.text:  # a real stream emits no deltas for empty content
+            on_text(self._result.text)
+        return self._result
 
 
-def _thinking_delta_event(text: str, index: int = 0) -> RawContentBlockDeltaEvent:
-    return RawContentBlockDeltaEvent(
-        type="content_block_delta",
-        index=index,
-        delta=ThinkingDelta(type="thinking_delta", thinking=text),
-    )
+class _PartialThenFailProvider:
+    """Emits some text, then fails mid-stream — the case fallback must NOT retry."""
+
+    def __init__(self, partial_text: str, error: Exception):
+        self.partial_text = partial_text
+        self.error = error
+        self.calls = 0
+
+    async def stream_reply(self, system_prompt, messages, on_text):
+        self.calls += 1
+        on_text(self.partial_text)
+        raise self.error
 
 
-def _final_message(text: str, stop_reason: str = "end_turn") -> Message:
-    return Message(
-        id="msg_test",
-        type="message",
-        role="assistant",
-        model="claude-sonnet-5",
-        content=[TextBlock(type="text", text=text, citations=None)],
-        stop_reason=stop_reason,
-        stop_sequence=None,
-        usage=Usage(
-            input_tokens=42,
-            output_tokens=7,
-            cache_read_input_tokens=100,
-            cache_creation_input_tokens=0,
-        ),
-    )
-
-
-class _FakeStream:
-    """Mimics anthropic's AsyncMessageStream: async-iterable + get_final_message()."""
-
-    def __init__(self, events, final):
-        self._events = events
-        self._final = final
-
-    def __aiter__(self):
-        return self._aiter()
-
-    async def _aiter(self):
-        for e in self._events:
-            yield e
-
-    async def get_final_message(self):
-        return self._final
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-
-class _FakeMessages:
-    def __init__(self, events, final):
-        self._events = events
-        self._final = final
-        self.last_call_kwargs = None
-
-    def stream(self, **kwargs):
-        self.last_call_kwargs = kwargs
-        return _FakeStream(self._events, self._final)
-
-
-class _FakeAnthropicClient:
-    def __init__(self, events, final):
-        self.messages = _FakeMessages(events, final)
+def _result(text="ok", model="stub-model") -> TurnResult:
+    return TurnResult(text=text, model=model, stop_reason="end_turn")
 
 
 @pytest.mark.asyncio
-async def test_forwards_only_text_deltas_and_builds_result():
-    events = [
-        _thinking_delta_event("pondering..."),
-        _text_delta_event("Hello, "),
-        _text_delta_event("world."),
-    ]
-    fake = _FakeAnthropicClient(events, _final_message("Hello, world."))
-    client = LLMClient(client=fake)
+async def test_uses_primary_provider_when_it_succeeds():
+    primary = _StubProvider(result=_result("hi"))
+    fallback = _StubProvider(result=_result("fallback"))
+    client = LLMClient(provider=primary, fallback_provider=fallback)
 
     seen = []
-    result = await client.stream_reply(
-        system_blocks=[{"type": "text", "text": "sys"}],
-        messages=[{"role": "user", "content": "hi"}],
-        on_text=seen.append,
-    )
+    result = await client.stream_reply("sys", [ChatMessage(role="user", text="hi")], seen.append)
 
-    # Only text deltas reach the caller — thinking is filtered out.
-    assert seen == ["Hello, ", "world."]
-    assert result.text == "Hello, world."
-    assert result.model == "claude-sonnet-5"
-    assert result.stop_reason == "end_turn"
-    assert result.input_tokens == 42
-    assert result.output_tokens == 7
-    assert result.cache_read_tokens == 100
-    assert not result.refused
+    assert result.text == "hi"
+    assert seen == ["hi"]
+    assert primary.calls == 1
+    assert fallback.calls == 0
 
 
 @pytest.mark.asyncio
-async def test_request_uses_configured_model_and_effort():
-    fake = _FakeAnthropicClient([], _final_message("ok"))
-    client = LLMClient(client=fake)
+async def test_falls_back_when_primary_fails_before_emitting_any_text():
+    primary = _StubProvider(error=RuntimeError("boom"))
+    fallback = _StubProvider(result=_result("fallback reply"))
+    client = LLMClient(provider=primary, fallback_provider=fallback)
 
-    await client.stream_reply(
-        system_blocks=[{"type": "text", "text": "sys"}],
-        messages=[{"role": "user", "content": "hi"}],
-        on_text=lambda _: None,
-    )
+    seen = []
+    result = await client.stream_reply("sys", [ChatMessage(role="user", text="hi")], seen.append)
 
-    kwargs = fake.messages.last_call_kwargs
-    assert kwargs["model"] == "claude-sonnet-5"
-    assert kwargs["output_config"] == {"effort": "medium"}
-    assert kwargs["thinking"] == {"type": "adaptive"}
-    assert kwargs["max_tokens"] == 8000
+    assert result.text == "fallback reply"
+    assert seen == ["fallback reply"]
+    assert primary.calls == 1
+    assert fallback.calls == 1
 
 
 @pytest.mark.asyncio
-async def test_refusal_is_surfaced_on_result():
-    fake = _FakeAnthropicClient([], _final_message("", stop_reason="refusal"))
-    client = LLMClient(client=fake)
+async def test_does_not_fall_back_after_partial_text_already_emitted():
+    primary = _PartialThenFailProvider("partial...", RuntimeError("mid-stream failure"))
+    fallback = _StubProvider(result=_result("fallback reply"))
+    client = LLMClient(provider=primary, fallback_provider=fallback)
 
-    result = await client.stream_reply(
-        system_blocks=[{"type": "text", "text": "sys"}],
-        messages=[{"role": "user", "content": "hi"}],
-        on_text=lambda _: None,
-    )
-    assert result.refused
-    assert result.text == ""
+    seen = []
+    with pytest.raises(RuntimeError, match="mid-stream failure"):
+        await client.stream_reply("sys", [ChatMessage(role="user", text="hi")], seen.append)
+
+    # Not garbled with a fallback attempt — the caller (orchestrator) handles
+    # this failure with its own spoken apology instead.
+    assert seen == ["partial..."]
+    assert fallback.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_no_fallback_configured_reraises_immediately():
+    primary = _StubProvider(error=ValueError("nope"))
+    client = LLMClient(provider=primary)  # no fallback_provider, no fallback in settings for this tier
+
+    with pytest.raises(ValueError, match="nope"):
+        await client.stream_reply("sys", [], lambda _: None)
+
+
+def test_t1_simple_resolves_configured_fallback_to_t1_standard():
+    from jarvis.llm.providers import AnthropicProvider, OpenRouterProvider
+
+    client = LLMClient(get_settings(), tier="t1_simple")
+    assert isinstance(client._provider, OpenRouterProvider)
+    assert isinstance(client._fallback_provider, AnthropicProvider)
+    assert client._fallback_provider.model == "claude-sonnet-5"
+
+
+def test_t1_standard_has_no_configured_fallback():
+    client = LLMClient(get_settings(), tier="t1_standard")
+    assert client._fallback_provider is None

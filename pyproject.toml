@@ -31,7 +31,14 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["jarvis", "jarvis.audio", "jarvis.speech", "jarvis.llm", "jarvis.core"]
+packages = [
+    "jarvis",
+    "jarvis.audio",
+    "jarvis.speech",
+    "jarvis.llm",
+    "jarvis.llm.providers",
+    "jarvis.core",
+]
 
 [tool.setuptools.package-data]
 "jarvis.llm" = ["prompts/*.md"]

@@ -31,14 +31,53 @@ tts:
   rate: 190               # words per minute
   max_inflight: 1         # sentences spoken concurrently (1 = strictly sequential)
 
-# Model routing (used from Milestone 2 onward; recorded here now so a model swap
-# never touches code). IDs verified against the Claude API model catalog.
+# Model routing: each tier names a provider + model. Switching providers or
+# models is a config change here, never a code change -- jarvis/llm/factory.py
+# reads this and builds the matching Provider. See ARCHITECTURE.md §6/§8 and
+# the provider-strategy research/decision recorded 2026-07-02.
+#
+# t1_simple now routes to OpenRouter's free tier instead of Haiku 4.5 (was
+# the "simple" tier's backend before this decision) -- Haiku's remaining job
+# is the M2 routing classifier below. Model ID verified live against
+# OpenRouter's catalog (google/gemma-4-31b-it:free); that catalog rotates
+# with little notice, which is exactly why t1_simple has a paid fallback.
+#
+# t2_medium/t3_complex are configured but not yet wired to a Layer B prompt
+# or usable via Session/LLMClient -- that lands with later milestones
+# (M4 tools, M3-full fallback ladder) per ARCHITECTURE.md §8.
 models:
-  t1_simple:   "claude-haiku-4-5"
-  t1_standard: "claude-sonnet-5"
-  t2_medium:   "claude-opus-4-8"
-  t3_complex:  "claude-fable-5"
-  router:      "claude-haiku-4-5"
+  t1_simple:
+    provider: openrouter
+    model: "google/gemma-4-31b-it:free"
+    max_tokens: 1024
+  t1_standard:
+    provider: anthropic
+    model: "claude-sonnet-5"
+    max_tokens: 8000
+    effort: medium
+  t2_medium:
+    provider: anthropic
+    model: "claude-opus-4-8"
+    max_tokens: 16000
+    effort: high
+  t3_complex:
+    provider: anthropic
+    model: "claude-fable-5"
+    max_tokens: 32000
+    effort: high
+  router:
+    provider: anthropic
+    model: "claude-haiku-4-5"
+    max_tokens: 1000
+
+# If a tier's provider call fails *before* streaming any text, retry once
+# against this other tier's provider instead (see jarvis/llm/client.py for
+# why it's conditioned on "before any text" -- a mid-stream failure is not
+# retried, to avoid garbling already-spoken output). Only t1_simple has one
+# right now; the fuller multi-tier fallback ladder (circuit breakers, etc.)
+# is ARCHITECTURE.md §5's "M3 full" milestone.
+fallbacks:
+  t1_simple: t1_standard
 
 budget:
   soft_daily_usd: 3.0

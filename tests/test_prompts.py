@@ -1,4 +1,4 @@
-from jarvis.llm.prompts import build_system_blocks, load_layer_a, load_layer_b
+from jarvis.llm.prompts import build_system_prompt, load_layer_a, load_layer_b
 
 
 def test_layer_a_is_shared_identity_core():
@@ -7,17 +7,22 @@ def test_layer_a_is_shared_identity_core():
     assert "VOICE OUTPUT RULES" in text
 
 
-def test_layer_b_sonnet_exists_and_is_distinct_from_layer_a():
-    text = load_layer_b("sonnet")
-    assert text  # non-empty
-    assert text != load_layer_a()
+def test_layer_b_exists_per_tier_and_is_distinct_from_layer_a():
+    for tier in ("t1_simple", "t1_standard"):
+        text = load_layer_b(tier)
+        assert text  # non-empty
+        assert text != load_layer_a()
 
 
-def test_system_blocks_combine_both_layers_as_one_cached_block():
-    blocks = build_system_blocks("sonnet")
-    assert len(blocks) == 1
-    block = blocks[0]
-    assert block["type"] == "text"
-    assert block["cache_control"] == {"type": "ephemeral"}
-    assert "Jarvis" in block["text"]  # Layer A present
-    assert load_layer_b("sonnet") in block["text"]  # Layer B present, verbatim
+def test_layer_b_differs_between_tiers():
+    assert load_layer_b("t1_simple") != load_layer_b("t1_standard")
+
+
+def test_system_prompt_combines_both_layers_as_plain_text():
+    # Plain text on purpose — caching/formatting is a provider-specific
+    # concern (AnthropicProvider), not something baked in here so any
+    # provider can consume the same prompt.
+    prompt = build_system_prompt("t1_standard")
+    assert isinstance(prompt, str)
+    assert "Jarvis" in prompt  # Layer A present
+    assert load_layer_b("t1_standard") in prompt  # Layer B present, verbatim

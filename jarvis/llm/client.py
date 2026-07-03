@@ -1,93 +1,78 @@
-"""Streaming Claude client — M3 minimal (ARCHITECTURE.md §8 step 2).
+"""Tier-aware LLM facade: picks a Provider from config, streams through it.
 
-Single model only (Sonnet 5), no tools, no fallback ladder. Those arrive in
-later milestones (M4 tools, M2 routing, M3 full). This module's job right now
-is exactly one thing: stream a reply and hand text deltas to a callback
-(typically ``Speaker.feed``) as they arrive, so the assistant starts speaking
-before the full response has finished generating.
+Callers (Session/orchestrator) never touch a specific vendor's SDK — they
+call ``LLMClient.stream_reply(system_prompt, messages, on_text)`` and it's a
+config change (``config/settings.yaml`` -> ``models.<tier>``), not a code
+change, to swap which provider/model backs a tier. See jarvis/llm/factory.py
+for how a tier resolves to a Provider instance.
 
-The ``anthropic`` SDK is imported lazily so the rest of the package stays
-importable without credentials configured, and a client can be injected for
-testing (see tests/test_llm_client.py).
+Fallback: a tier can name a ``fallbacks.<tier>`` entry in settings pointing
+at another tier to retry on failure. Currently only "t1_simple" (OpenRouter
+free) has one, pointing at "t1_standard" (Sonnet 5, paid) — the free-model
+catalog rotates and can be rate-limited or withdrawn with little notice (see
+the OpenRouter research behind this design), so treat that failure as
+expected, not exceptional.
+
+The fallback is deliberately conservative about streaming: it only retries
+if the primary provider failed *before* emitting any text. If a few words
+had already reached ``on_text`` (a mid-stream failure) and we retried, the
+fallback's reply would be interleaved with the primary's leftover fragment —
+audibly garbled once it hits TTS. In that case we just let the exception
+propagate (the caller's existing spoken-fallback handling, see
+jarvis/core/orchestrator.py, still degrades gracefully — it just won't be a
+seamless retry).
 """
 from __future__ import annotations
 
-from typing import Any, Callable, List, Optional
+from typing import Callable, List, Optional
 
 from jarvis.config import Settings, get_settings
-from jarvis.llm.types import TurnResult
+from jarvis.llm.factory import build_provider
+from jarvis.llm.providers import Provider
+from jarvis.llm.types import ChatMessage, TurnResult
+
+
+def _resolve_fallback_tier(settings: Settings, tier: str) -> Optional[str]:
+    fallbacks = settings.get("fallbacks", {})
+    if tier in fallbacks:
+        return str(fallbacks[tier])
+    return None
 
 
 class LLMClient:
-    """Streams one conversational turn through a single Claude model.
-
-    Usage::
-
-        client = LLMClient()
-        result = await client.stream_reply(
-            system_blocks=build_system_blocks("sonnet"),
-            messages=history,
-            on_text=speaker.feed,
-        )
-    """
-
-    def __init__(self, settings: Optional[Settings] = None, client: Optional[Any] = None):
+    def __init__(
+        self,
+        settings: Optional[Settings] = None,
+        tier: str = "t1_standard",
+        provider: Optional[Provider] = None,
+        fallback_provider: Optional[Provider] = None,
+    ):
         s = settings or get_settings()
-        self.model: str = str(s.models.t1_standard)  # Sonnet 5 for M3 minimal
-        self.max_tokens: int = 8000
-        self.effort: str = "medium"
-        self._client = client  # injectable for tests; lazily created otherwise
+        self.tier = tier
+        self._provider: Provider = provider or build_provider(s, tier)
 
-    def _get_client(self) -> Any:
-        if self._client is None:
-            import anthropic  # lazy: requires credentials to actually call
-
-            self._client = anthropic.AsyncAnthropic()
-        return self._client
+        if fallback_provider is not None:
+            self._fallback_provider: Optional[Provider] = fallback_provider
+        else:
+            fallback_tier = _resolve_fallback_tier(s, tier)
+            self._fallback_provider = build_provider(s, fallback_tier) if fallback_tier else None
 
     async def stream_reply(
         self,
-        system_blocks: List[dict],
-        messages: List[dict],
+        system_prompt: str,
+        messages: List[ChatMessage],
         on_text: Callable[[str], None],
     ) -> TurnResult:
-        """Stream one assistant turn.
+        emitted = False
 
-        Args:
-            system_blocks: cacheable system prompt (see jarvis.llm.prompts).
-            messages: full conversation history, ending in the latest user turn.
-            on_text: called with each streamed text delta (not thinking deltas).
+        def tracking_on_text(chunk: str) -> None:
+            nonlocal emitted
+            emitted = True
+            on_text(chunk)
 
-        Returns:
-            TurnResult with the complete text and usage/stop-reason metadata.
-        """
-        client = self._get_client()
-
-        async with client.messages.stream(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=system_blocks,
-            thinking={"type": "adaptive"},
-            output_config={"effort": self.effort},
-            messages=messages,
-        ) as stream:
-            async for event in stream:
-                if event.type == "content_block_delta":
-                    delta = event.delta
-                    if getattr(delta, "type", None) == "text_delta":
-                        on_text(delta.text)
-            final = await stream.get_final_message()
-
-        text = "".join(
-            block.text for block in final.content if getattr(block, "type", None) == "text"
-        )
-        usage = final.usage
-        return TurnResult(
-            text=text,
-            model=final.model,
-            stop_reason=final.stop_reason or "",
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-            cache_creation_tokens=getattr(usage, "cache_creation_input_tokens", 0) or 0,
-        )
+        try:
+            return await self._provider.stream_reply(system_prompt, messages, tracking_on_text)
+        except Exception:
+            if self._fallback_provider is None or emitted:
+                raise
+            return await self._fallback_provider.stream_reply(system_prompt, messages, on_text)
