@@ -3,7 +3,7 @@ from jarvis.llm.prompts import build_system_prompt, load_layer_a, load_layer_b
 
 def test_layer_a_is_shared_identity_core():
     text = load_layer_a()
-    assert "Jarvis" in text
+    assert "Z.E.R.O" in text
     assert "VOICE OUTPUT RULES" in text
 
 
@@ -24,5 +24,5 @@ def test_system_prompt_combines_both_layers_as_plain_text():
     # provider can consume the same prompt.
     prompt = build_system_prompt("t1_standard")
     assert isinstance(prompt, str)
-    assert "Jarvis" in prompt  # Layer A present
+    assert "Z.E.R.O" in prompt  # Layer A present
     assert load_layer_b("t1_standard") in prompt  # Layer B present, verbatim

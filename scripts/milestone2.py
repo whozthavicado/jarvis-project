@@ -50,12 +50,12 @@ def _print_turn(t: Transcript, result) -> None:
 
 
 async def run_live(tier: str) -> None:
-    print(f"Jarvis M2: listening on tier={tier!r}. Speak, then pause. Ctrl-C to stop.\n")
+    print(f"Z.E.R.O M2: listening on tier={tier!r}. Speak, then pause. Ctrl-C to stop.\n")
     await converse(tier=tier, on_turn=_print_turn)
 
 
 async def run_text(tier: str) -> None:
-    print(f"Jarvis M2 (text mode, tier={tier!r}). Type a message, Ctrl-C or empty line to stop.\n")
+    print(f"Z.E.R.O M2 (text mode, tier={tier!r}). Type a message, Ctrl-C or empty line to stop.\n")
     settings = get_settings()
     session = Session(tier=tier)
     llm = LLMClient(settings, tier=tier)
@@ -105,7 +105,7 @@ async def run_check(tier: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Jarvis Milestone 2 demo")
+    parser = argparse.ArgumentParser(description="Z.E.R.O Milestone 2 demo")
     parser.add_argument("--text", action="store_true", help="type instead of speaking")
     parser.add_argument(
         "--check", action="store_true", help="verify the tier's provider credentials with one call"

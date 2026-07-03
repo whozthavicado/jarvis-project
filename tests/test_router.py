@@ -65,4 +65,4 @@ def test_system_prompt_for_differs_by_tier():
     standard = Router.system_prompt_for("t1_standard")
     simple = Router.system_prompt_for("t1_simple")
     assert standard != simple
-    assert "Jarvis" in standard
+    assert "Z.E.R.O" in standard

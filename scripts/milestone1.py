@@ -1,6 +1,6 @@
 """Milestone 1 demo: prove the hear -> transcribe -> speak loop.
 
-There is no LLM in this milestone. Jarvis listens, transcribes what you said,
+There is no LLM in this milestone. Z.E.R.O listens, transcribes what you said,
 prints it, and echoes it back through TTS. This exercises M1 (audio) + M6
 (speech) end to end.
 
@@ -28,7 +28,7 @@ from jarvis.speech import Speaker
 
 async def run_live() -> None:
     settings = get_settings()
-    print("Jarvis M1: listening. Speak, then pause. Ctrl-C to stop.\n")
+    print("Z.E.R.O M1: listening. Speak, then pause. Ctrl-C to stop.\n")
     async with Speaker(settings) as speaker:
         async for t in transcripts(settings):
             print(f"  heard ({t.duration_ms} ms): {t.text!r}")
@@ -52,7 +52,7 @@ async def run_check() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Jarvis Milestone 1 demo")
+    parser = argparse.ArgumentParser(description="Z.E.R.O Milestone 1 demo")
     parser.add_argument("--tts-only", metavar="TEXT", help="speak TEXT and exit")
     parser.add_argument(
         "--check", action="store_true", help="health-check the whisper server"

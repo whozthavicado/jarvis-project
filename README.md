@@ -1,4 +1,4 @@
-# Jarvis
+# Z.E.R.O
 
 Local-first personal voice assistant for an 8 GB MacBook. All heavy intelligence
 runs through the Claude API; the machine only captures audio, transcribes, routes,
@@ -69,7 +69,7 @@ WHISPER_DIR=~/whisper.cpp ./scripts/start_whisper_server.sh
 
 ```bash
 python -m scripts.milestone1 --check       # is the whisper server up?
-python -m scripts.milestone1 --tts-only "Hello, I am Jarvis."   # speech only
+python -m scripts.milestone1 --tts-only "Hello, I am Z.E.R.O."   # speech only
 python -m scripts.milestone1               # live: speak, pause, hear it echoed
 ```
 

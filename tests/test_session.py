@@ -43,7 +43,7 @@ def test_messages_property_reflects_full_history_in_order():
 def test_system_prompt_built_once_at_construction():
     session = Session(tier="t1_standard")
     assert isinstance(session.system_prompt, str)
-    assert "Jarvis" in session.system_prompt
+    assert "Z.E.R.O" in session.system_prompt
 
 
 def test_different_tiers_get_different_layer_b_addenda():

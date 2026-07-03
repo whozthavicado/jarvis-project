@@ -82,7 +82,7 @@ async def brightness(args: Dict[str, Any]) -> str:
 
 
 async def notify(args: Dict[str, Any]) -> str:
-    title = args.get("title", "Jarvis")
+    title = args.get("title", "Z.E.R.O")
     message = args["message"]
     safe_title = title.replace('"', '\\"')
     safe_message = message.replace('"', '\\"')

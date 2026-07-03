@@ -1,4 +1,4 @@
-# Jarvis — Personal Voice Assistant Architecture
+# Z.E.R.O — Personal Voice Assistant Architecture
 
 **Target hardware:** MacBook, 8 GB RAM total (~4–5 GB realistically free for us)
 **Design principle:** everything heavy runs in the cloud; the local machine only does
@@ -25,7 +25,7 @@ Python orchestrator + SDK           ~100–150 MB
 silero-vad + audio buffers          ~ 50 MB
 SQLite + misc                       ~ 30 MB
 ------------------------------------------------
-Total Jarvis footprint              ~450–600 MB   ✅ well under budget
+Total Z.E.R.O footprint              ~450–600 MB   ✅ well under budget
 ```
 
 ---
@@ -165,7 +165,7 @@ resp = client.messages.create(
 
 - **Mid-task escalation:** every tier's system prompt includes: *"If this task is beyond what you can do well, reply only with the token `<ESCALATE>` and one sentence explaining why."* The orchestrator catches it and re-runs the turn one tier up (max one escalation per turn; T2→T3 requires the user to confirm because of cost).
 - **Failure escalation:** if a T1/T1.5 answer errors twice in the tool loop, retry the whole turn at the next tier.
-- **Never route to Fable silently.** T3 is entered only via RULE 1, classifier + user confirmation, or explicit user request. Jarvis says "This one's hard — engaging full power, give me a couple of minutes" so latency is expected.
+- **Never route to Fable silently.** T3 is entered only via RULE 1, classifier + user confirmation, or explicit user request. Z.E.R.O says "This one's hard — engaging full power, give me a couple of minutes" so latency is expected.
 
 ---
 
@@ -186,7 +186,7 @@ render order (this order matters for caching):
 ### Layer A — identity core (~600 tokens, byte-frozen)
 
 ```
-You are Jarvis, a personal voice assistant running on <user>'s MacBook.
+You are Z.E.R.O, a personal voice assistant running on <user>'s MacBook.
 
 VOICE OUTPUT RULES (critical — your text is spoken aloud by TTS):
 - Answer in 1–3 short sentences unless the user asked for detail.
@@ -332,7 +332,7 @@ Tool failures never crash the loop — return `{"type":"tool_result", "tool_use_
 - **Watchdogs:** whisper-server health-checked every 30 s, auto-restarted; `say` failure falls back to on-screen notification (`osascript display notification`).
 
 ### 5.5 Budget guard
-Daily spend counter from `usage` fields (`input_tokens`, `output_tokens`, cache fields) per response. Soft cap (e.g. $3/day): T2+ requests require spoken confirmation. Hard cap: everything routes to Haiku until midnight, and Jarvis says so.
+Daily spend counter from `usage` fields (`input_tokens`, `output_tokens`, cache fields) per response. Soft cap (e.g. $3/day): T2+ requests require spoken confirmation. Hard cap: everything routes to Haiku until midnight, and Z.E.R.O says so.
 
 ---
 
