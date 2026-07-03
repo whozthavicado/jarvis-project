@@ -13,6 +13,15 @@ M4 adds RULE 0 (ARCHITECTURE.md §2): before any of that, a transcript is
 checked against the T0 command grammar. A match executes a tool locally
 with no API call and no session/history mutation at all — T0 turns are not
 part of the conversation the LLM sees.
+
+M2 adds per-turn routing across T1-T3 via an optional ``router``
+(:class:`jarvis.routing.Router`). When one is passed, ``handle_turn``
+resolves a tier fresh each turn (Stage 1 heuristics, Stage 2 Haiku
+classifier) instead of using the session's fixed construction-time tier —
+conversation history still lives on the one ``Session``, but which
+model/system-prompt answers a given turn can now vary turn to turn. Without
+a router, behavior is unchanged from before: one tier, fixed for the whole
+session, exactly as ``llm`` and ``session`` were built for.
 """
 from __future__ import annotations
 
@@ -22,7 +31,7 @@ from jarvis.audio import Transcript, transcripts
 from jarvis.config import Settings, get_settings
 from jarvis.core.session import Session
 from jarvis.llm import LLMClient, TurnResult
-from jarvis.routing import match as match_t0
+from jarvis.routing import Router, match as match_t0
 from jarvis.speech import Speaker
 from jarvis.tools import execute as execute_tool
 from jarvis.tools.registry import ConfirmFn
@@ -55,6 +64,7 @@ async def handle_turn(
     transcript: Transcript,
     on_text: Callable[[str], None],
     tool_confirm: Optional[ConfirmFn] = None,
+    router: Optional[Router] = None,
 ) -> Optional[TurnResult]:
     """Process one user turn against *session*, streaming the reply to on_text.
 
@@ -66,6 +76,11 @@ async def handle_turn(
     tool runs locally, its result is spoken, and neither the LLM nor the
     session's history is touched — that turn returns a synthetic TurnResult
     with model="t0" so callers can tell T0 turns apart from real LLM turns.
+
+    If *router* is given, it (not ``llm``/``session.system_prompt``) decides
+    which tier and LLMClient handle this specific turn — ``llm`` is then only
+    used as history's tier-agnostic bookkeeping; per M2 (ARCHITECTURE.md
+    §2), routing runs fresh every turn, not once per session.
     """
     t0_call = match_t0(transcript.text)
     if t0_call is not None:
@@ -74,8 +89,17 @@ async def handle_turn(
         return TurnResult(text=result.content, model="t0", stop_reason="t0_command")
 
     session.add_user_turn(transcript.text)
+
+    if router is not None:
+        tier = await router.resolve(transcript.text)
+        turn_llm = router.llm_for(tier)
+        system_prompt = router.system_prompt_for(tier)
+    else:
+        turn_llm = llm
+        system_prompt = session.system_prompt
+
     try:
-        result = await llm.stream_reply(session.system_prompt, session.messages, on_text)
+        result = await turn_llm.stream_reply(system_prompt, session.messages, on_text)
     except Exception as exc:  # noqa: BLE001 - deliberately broad; see _fallback_text_for
         on_text(_fallback_text_for(exc))
         return None
@@ -92,24 +116,29 @@ async def converse(
     settings: Optional[Settings] = None,
     tier: str = "t1_standard",
     on_turn: Optional[Callable[[Transcript, Optional[TurnResult]], None]] = None,
+    route: bool = True,
 ) -> None:
     """Run the live listen -> reply -> speak loop until cancelled.
 
     Args:
         settings: override settings (defaults to global config).
-        tier: which configured tier to converse on (see
-            config/settings.yaml -> models). No automatic routing between
-            tiers yet — that's a later milestone.
+        tier: fallback tier used when *route* is False, and for the
+            session's own construction-time system prompt (unused for the
+            actual LLM call when routing is on — see *route*).
         on_turn: optional callback fired after each turn (transcript, result)
             for logging/printing; result is None if the turn errored.
+        route: when True (default), each turn is routed independently across
+            T1-T3 by a :class:`jarvis.routing.Router` (ARCHITECTURE.md §2).
+            Set False to pin the whole conversation to *tier*, as before M2.
     """
     s = settings or get_settings()
     session = Session(tier=tier)
     llm = LLMClient(s, tier=tier)
+    router = Router(s) if route else None
 
     async with Speaker(s) as speaker:
         async for t in transcripts(s):
-            result = await handle_turn(session, llm, t, speaker.feed)
+            result = await handle_turn(session, llm, t, speaker.feed, router=router)
             await speaker.flush()
             if on_turn is not None:
                 on_turn(t, result)

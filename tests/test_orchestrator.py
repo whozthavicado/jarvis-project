@@ -10,6 +10,7 @@ from jarvis.core.orchestrator import _fallback_text_for, handle_turn
 from jarvis.core.session import Session
 from jarvis.llm.providers import OpenRouterError
 from jarvis.llm.types import ChatMessage, TurnResult
+from jarvis.routing.router import Router
 
 
 def _req() -> httpx.Request:
@@ -139,3 +140,57 @@ async def test_non_t0_transcript_falls_through_to_llm():
     assert result.text == "It looks sunny."
     assert len(llm.calls) == 1
     assert len(session.history) == 2
+
+
+class _StubRouter:
+    """Router double: fixed tier, records which LLMClient was resolved."""
+
+    def __init__(self, tier: str, llm: _StubLLM):
+        self.tier = tier
+        self._llm = llm
+        self.resolved_texts = []
+
+    async def resolve(self, text: str) -> str:
+        self.resolved_texts.append(text)
+        return self.tier
+
+    def llm_for(self, tier: str) -> _StubLLM:
+        assert tier == self.tier
+        return self._llm
+
+    @staticmethod
+    def system_prompt_for(tier: str) -> str:
+        return f"system-prompt-for-{tier}"
+
+
+@pytest.mark.asyncio
+async def test_router_decides_the_tier_and_system_prompt_per_turn():
+    session = Session(tier="t1_standard")  # session's own tier is now unused for the call
+    routed_llm = _StubLLM(result=_ok_result("Routed reply."))
+    router = _StubRouter(tier="t2_medium", llm=routed_llm)
+    unused_llm = _StubLLM(result=_ok_result("should not be used"))
+    seen = []
+
+    result = await handle_turn(
+        session,
+        unused_llm,
+        Transcript(text="please design a plan for the migration"),
+        seen.append,
+        router=router,
+    )
+
+    assert result.text == "Routed reply."
+    assert unused_llm.calls == []
+    assert len(routed_llm.calls) == 1
+    system_prompt, _messages = routed_llm.calls[0]
+    assert system_prompt == "system-prompt-for-t2_medium"
+    assert router.resolved_texts == ["please design a plan for the migration"]
+
+
+@pytest.mark.asyncio
+async def test_router_is_isinstance_compatible_with_real_router():
+    # Guards against the stub's interface drifting from the real Router.
+    real = Router()
+    assert hasattr(real, "resolve") and hasattr(real, "llm_for") and hasattr(
+        real, "system_prompt_for"
+    )
