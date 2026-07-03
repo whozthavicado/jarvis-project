@@ -6,6 +6,7 @@ import pytest
 import anthropic
 
 from jarvis.audio.types import Transcript
+from jarvis.core.budget import BudgetGuard
 from jarvis.core.orchestrator import _fallback_text_for, handle_turn
 from jarvis.core.session import Session
 from jarvis.llm.providers import OpenRouterError
@@ -28,6 +29,7 @@ class _StubLLM:
         self._result = result
         self._error = error
         self.calls = []
+        self.tier = "t1_standard"
 
     async def stream_reply(self, system_prompt, messages, on_text):
         self.calls.append((system_prompt, messages))
@@ -194,3 +196,99 @@ async def test_router_is_isinstance_compatible_with_real_router():
     assert hasattr(real, "resolve") and hasattr(real, "llm_for") and hasattr(
         real, "system_prompt_for"
     )
+
+
+class _MultiTierStubRouter:
+    """Router double serving a different stub LLM per tier -- for budget
+    tests that need the orchestrator to actually reroute mid-turn."""
+
+    def __init__(self, resolved_tier: str, llms: dict):
+        self._resolved_tier = resolved_tier
+        self._llms = llms
+
+    async def resolve(self, text: str) -> str:
+        return self._resolved_tier
+
+    def llm_for(self, tier: str):
+        return self._llms[tier]
+
+    @staticmethod
+    def system_prompt_for(tier: str) -> str:
+        return f"system-prompt-for-{tier}"
+
+
+@pytest.mark.asyncio
+async def test_budget_none_means_no_behavior_change():
+    session = Session(tier="t1_standard")
+    llm = _StubLLM(result=_ok_result("hi"))
+    seen = []
+
+    result = await handle_turn(session, llm, Transcript(text="hello"), seen.append, budget=None)
+
+    assert result.text == "hi"
+    assert seen == ["hi"]  # no budget notice prefixed
+
+
+@pytest.mark.asyncio
+async def test_soft_cap_prefixes_a_notice_but_still_uses_resolved_tier():
+    session = Session(tier="t1_standard")
+    t2_llm = _StubLLM(result=_ok_result("Complex reply."))
+    router = _MultiTierStubRouter(resolved_tier="t2_medium", llms={"t2_medium": t2_llm})
+    budget = BudgetGuard(soft_daily_usd=0.0, hard_daily_usd=1000.0)  # already over soft cap
+    seen = []
+
+    result = await handle_turn(
+        session, t2_llm, Transcript(text="plan this out"), seen.append, router=router, budget=budget
+    )
+
+    assert result.text == "Complex reply."
+    assert seen[0].startswith("Heads up")
+    assert seen[1:] == ["Complex reply."]
+    assert len(t2_llm.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_soft_cap_does_not_affect_t1_tiers():
+    session = Session(tier="t1_standard")
+    t1_llm = _StubLLM(result=_ok_result("Simple reply."))
+    router = _MultiTierStubRouter(resolved_tier="t1_standard", llms={"t1_standard": t1_llm})
+    budget = BudgetGuard(soft_daily_usd=0.0, hard_daily_usd=1000.0)
+    seen = []
+
+    await handle_turn(
+        session, t1_llm, Transcript(text="hi"), seen.append, router=router, budget=budget
+    )
+
+    assert seen == ["Simple reply."]  # no soft-cap notice for a T1 tier
+
+
+@pytest.mark.asyncio
+async def test_hard_cap_forces_tier_down_to_t1_simple_with_router():
+    session = Session(tier="t1_standard")
+    t2_llm = _StubLLM(result=_ok_result("expensive reply"))
+    t1_simple_llm = _StubLLM(result=_ok_result("cheap reply"))
+    router = _MultiTierStubRouter(
+        resolved_tier="t2_medium", llms={"t2_medium": t2_llm, "t1_simple": t1_simple_llm}
+    )
+    budget = BudgetGuard(soft_daily_usd=0.0, hard_daily_usd=0.0)  # already over hard cap
+    seen = []
+
+    result = await handle_turn(
+        session, t2_llm, Transcript(text="plan this out"), seen.append, router=router, budget=budget
+    )
+
+    assert result.text == "cheap reply"
+    assert seen[0].startswith("Running in reduced mode")
+    assert t2_llm.calls == []  # never touched -- rerouted before the call
+    assert len(t1_simple_llm.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_budget_records_spend_after_a_successful_turn():
+    session = Session(tier="t1_standard")
+    llm = _StubLLM(result=_ok_result("hi"))
+    budget = BudgetGuard(soft_daily_usd=3.0, hard_daily_usd=6.0)
+
+    await handle_turn(session, llm, Transcript(text="hello"), lambda _: None, budget=budget)
+
+    assert budget.spent_usd >= 0.0  # _ok_result carries no usage, but record() must not raise

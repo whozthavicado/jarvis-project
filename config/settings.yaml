@@ -70,14 +70,20 @@ models:
     model: "claude-haiku-4-5"
     max_tokens: 1000
 
-# If a tier's provider call fails *before* streaming any text, retry once
-# against this other tier's provider instead (see jarvis/llm/client.py for
-# why it's conditioned on "before any text" -- a mid-stream failure is not
-# retried, to avoid garbling already-spoken output). Only t1_simple has one
-# right now; the fuller multi-tier fallback ladder (circuit breakers, etc.)
-# is ARCHITECTURE.md §5's "M3 full" milestone.
+# If a tier's provider call fails *before* streaming any text (and the
+# failure is transient -- see jarvis/llm/fallbacks.py's is_transient), try
+# this other tier's provider instead. jarvis/llm/client.py walks this map
+# repeatedly (fallback_chain), so a tier can degrade through more than one
+# hop -- t3_complex -> t2_medium -> t1_standard mirrors ARCHITECTURE.md
+# §5.1's Fable -> Opus -> Sonnet degrade-under-load ladder; t1_simple ->
+# t1_standard is a different kind of hop (an *upgrade*, not a degrade --
+# OpenRouter's free tier is flaky/rotates, Sonnet is the reliable backstop).
+# A per-tier circuit breaker (3 consecutive failures -> 5 min cooldown)
+# skips a tripped tier without even trying it.
 fallbacks:
   t1_simple: t1_standard
+  t3_complex: t2_medium
+  t2_medium: t1_standard
 
 budget:
   soft_daily_usd: 3.0

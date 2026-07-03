@@ -29,6 +29,15 @@ M5 adds persistent memory (ARCHITECTURE.md §4): ``converse`` now builds its
 first turn's context block picks up the core digest + FTS recall, and each
 turn compacts the session's history once it's grown large. The session is
 closed out (Haiku summary + sessions.ended_at) when the listen loop ends.
+
+M3-full adds the daily budget guard (ARCHITECTURE.md §5.5) via an optional
+``budget``. Hard cap hit: the turn is forced onto ``t1_simple`` (the $0
+tier) if a router is available to do that rerouting, and a spoken notice
+leads the reply. Soft cap hit on a T2+ tier: the turn proceeds on its
+resolved tier, but with a spoken heads-up first -- there's no voice
+confirmation channel yet, so "requires confirmation" is implemented here as
+"is surfaced audibly", not a yes/no gate. Without a ``budget``, behavior is
+unchanged (unlimited), which is what every pre-M3-full test still exercises.
 """
 from __future__ import annotations
 
@@ -36,6 +45,7 @@ from typing import Callable, Optional
 
 from jarvis.audio import Transcript, transcripts
 from jarvis.config import Settings, get_settings
+from jarvis.core.budget import BudgetGuard, get_budget_guard
 from jarvis.core.session import Session
 from jarvis.llm import LLMClient, TurnResult
 from jarvis.memory import get_store
@@ -43,6 +53,10 @@ from jarvis.routing import Router, match as match_t0
 from jarvis.speech import Speaker
 from jarvis.tools import execute as execute_tool
 from jarvis.tools.registry import ConfirmFn
+
+_HARD_CAP_NOTICE = "Running in reduced mode — today's budget is used up: "
+_SOFT_CAP_NOTICE = "Heads up, we're near today's budget for the heavier models — continuing anyway: "
+_BUDGET_FALLBACK_TIER = "t1_simple"
 
 
 def _fallback_text_for(exc: Exception) -> str:
@@ -73,6 +87,7 @@ async def handle_turn(
     on_text: Callable[[str], None],
     tool_confirm: Optional[ConfirmFn] = None,
     router: Optional[Router] = None,
+    budget: Optional[BudgetGuard] = None,
 ) -> Optional[TurnResult]:
     """Process one user turn against *session*, streaming the reply to on_text.
 
@@ -103,8 +118,23 @@ async def handle_turn(
         turn_llm = router.llm_for(tier)
         system_prompt = router.system_prompt_for(tier)
     else:
+        tier = llm.tier
         turn_llm = llm
         system_prompt = session.system_prompt
+
+    notice = ""
+    if budget is not None:
+        if budget.hard_cap_hit():
+            notice = _HARD_CAP_NOTICE
+            if router is not None and tier != _BUDGET_FALLBACK_TIER:
+                tier = _BUDGET_FALLBACK_TIER
+                turn_llm = router.llm_for(tier)
+                system_prompt = router.system_prompt_for(tier)
+        elif budget.needs_confirmation(tier):
+            notice = _SOFT_CAP_NOTICE
+
+    if notice:
+        on_text(notice)
 
     try:
         result = await turn_llm.stream_reply(system_prompt, session.messages, on_text)
@@ -115,6 +145,9 @@ async def handle_turn(
     if result.refused or not result.text:
         on_text("I'd rather not answer that.")
         return result
+
+    if budget is not None:
+        budget.record(result)
 
     session.add_assistant_turn(result.text)
     await session.compact_if_needed()
@@ -144,11 +177,14 @@ async def converse(
     session = Session(tier=tier, store=get_store(s))
     llm = LLMClient(s, tier=tier)
     router = Router(s) if route else None
+    budget = get_budget_guard(s)
 
     try:
         async with Speaker(s) as speaker:
             async for t in transcripts(s):
-                result = await handle_turn(session, llm, t, speaker.feed, router=router)
+                result = await handle_turn(
+                    session, llm, t, speaker.feed, router=router, budget=budget
+                )
                 await speaker.flush()
                 if on_turn is not None:
                     on_turn(t, result)
