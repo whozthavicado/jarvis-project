@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Local models & data
+models/
+*.bin
+*.gguf
+data/
+*.sqlite
+*.sqlite3
+
+# Audio scratch
+*.wav
+!tests/**/*.wav
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Claude Code local (personal) settings
+.claude/settings.local.json

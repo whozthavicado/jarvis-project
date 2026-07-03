@@ -1,0 +1,45 @@
+# Single source of truth for tunables. Code reads this — never hardcode model IDs
+# or audio params. See ARCHITECTURE.md §6.
+
+audio:
+  sample_rate: 16000      # whisper.cpp + webrtcvad require 16 kHz mono
+  channels: 1
+  frame_ms: 30            # webrtcvad accepts only 10 / 20 / 30 ms frames
+  device: null            # null = system default input device
+
+vad:
+  aggressiveness: 2       # webrtcvad 0..3 (higher = more aggressive filtering)
+  start_frames: 3         # consecutive voiced frames to trigger "speech started"
+  end_silence_ms: 600     # trailing silence that ends a segment
+  max_segment_ms: 15000   # hard cap so a stuck mic can't buffer forever
+  min_segment_ms: 250     # discard blips shorter than this
+
+whisper:
+  server_url: "http://127.0.0.1:8080"
+  endpoint: "/inference"
+  timeout_s: 30
+  language: "auto"        # "auto" | "en" | "es" | ...
+  # Whisper hallucination artifacts to discard on low-energy segments.
+  hallucination_blocklist:
+    - "thank you."
+    - "thanks for watching!"
+    - "subtitles by the amara.org community"
+    - "you"
+
+tts:
+  voice: null             # null = system default `say` voice
+  rate: 190               # words per minute
+  max_inflight: 1         # sentences spoken concurrently (1 = strictly sequential)
+
+# Model routing (used from Milestone 2 onward; recorded here now so a model swap
+# never touches code). IDs verified against the Claude API model catalog.
+models:
+  t1_simple:   "claude-haiku-4-5"
+  t1_standard: "claude-sonnet-5"
+  t2_medium:   "claude-opus-4-8"
+  t3_complex:  "claude-fable-5"
+  router:      "claude-haiku-4-5"
+
+budget:
+  soft_daily_usd: 3.0
+  hard_daily_usd: 6.0

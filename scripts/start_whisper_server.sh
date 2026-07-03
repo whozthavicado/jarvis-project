@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Launch a persistent whisper.cpp server for Jarvis (M1).
+#
+# Loads the model once and serves HTTP on :8080 so transcription stays warm.
+# On an 8 GB machine, prefer the quantized base model (~60 MB on disk,
+# ~250-350 MB resident with Metal).
+#
+# First-time setup:
+#   git clone https://github.com/ggml-org/whisper.cpp
+#   cd whisper.cpp && cmake -B build && cmake --build build -j --config Release
+#   ./models/download-ggml-model.sh base-q5_1
+#
+# Then point WHISPER_DIR at that checkout and run this script.
+
+set -euo pipefail
+
+WHISPER_DIR="${WHISPER_DIR:-$HOME/whisper.cpp}"
+MODEL="${WHISPER_MODEL:-$WHISPER_DIR/models/ggml-base-q5_1.bin}"
+HOST="${WHISPER_HOST:-127.0.0.1}"
+PORT="${WHISPER_PORT:-8080}"
+LANG="${WHISPER_LANG:-auto}"
+
+# Server binary location differs across whisper.cpp versions.
+BIN=""
+for candidate in \
+  "$WHISPER_DIR/build/bin/whisper-server" \
+  "$WHISPER_DIR/build/bin/server" \
+  "$WHISPER_DIR/server"; do
+  if [[ -x "$candidate" ]]; then BIN="$candidate"; break; fi
+done
+
+if [[ -z "$BIN" ]]; then
+  echo "ERROR: whisper server binary not found under $WHISPER_DIR." >&2
+  echo "Build it first (see the header of this script)." >&2
+  exit 1
+fi
+if [[ ! -f "$MODEL" ]]; then
+  echo "ERROR: model not found: $MODEL" >&2
+  echo "Download it: $WHISPER_DIR/models/download-ggml-model.sh base-q5_1" >&2
+  exit 1
+fi
+
+echo "Starting whisper server: $BIN"
+echo "  model=$MODEL  host=$HOST  port=$PORT  lang=$LANG"
+exec "$BIN" -m "$MODEL" --host "$HOST" --port "$PORT" -l "$LANG"
