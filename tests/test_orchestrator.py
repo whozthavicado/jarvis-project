@@ -100,3 +100,42 @@ async def test_refusal_speaks_a_generic_decline_but_result_is_returned():
 )
 def test_fallback_text_classifies_common_failures(exc, expected_snippet):
     assert expected_snippet in _fallback_text_for(exc)
+
+
+@pytest.mark.asyncio
+async def test_t0_grammar_match_bypasses_llm_and_session(monkeypatch):
+    """A T0 command (RULE 0) never touches the LLM or session history."""
+    session = Session(tier="t1_standard")
+    llm = _StubLLM(result=_ok_result())  # would fail this test if called
+    seen = []
+
+    async def fake_what_time(args):
+        return "It's four o'clock PM."
+
+    from dataclasses import replace
+
+    from jarvis.tools import registry
+
+    fake_tool = replace(registry._REGISTRY["what_time"], handler=fake_what_time)
+    monkeypatch.setitem(registry._REGISTRY, "what_time", fake_tool)
+
+    result = await handle_turn(session, llm, Transcript(text="what time is it"), seen.append)
+
+    assert result.model == "t0"
+    assert result.stop_reason == "t0_command"
+    assert seen == ["It's four o'clock PM."]
+    assert llm.calls == []
+    assert session.history == []
+
+
+@pytest.mark.asyncio
+async def test_non_t0_transcript_falls_through_to_llm():
+    session = Session(tier="t1_standard")
+    llm = _StubLLM(result=_ok_result("It looks sunny."))
+    seen = []
+
+    result = await handle_turn(session, llm, Transcript(text="what's the weather like"), seen.append)
+
+    assert result.text == "It looks sunny."
+    assert len(llm.calls) == 1
+    assert len(session.history) == 2

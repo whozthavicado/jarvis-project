@@ -1,4 +1,4 @@
-"""Main loop: listen -> LLM (streaming, tier-selected) -> speak.
+"""Main loop: listen -> T0 grammar or LLM (streaming, tier-selected) -> speak.
 
 This is still single-tier per session (no automatic routing yet — that's the
 M2 module, a later milestone): the caller picks a tier for the whole
@@ -8,6 +8,11 @@ A failed turn degrades to a spoken apology and the loop keeps listening
 rather than crashing the whole session; LLMClient itself may have already
 tried a same-turn fallback (e.g. OpenRouter free -> Sonnet 5) before this
 code ever sees an exception — see jarvis/llm/client.py.
+
+M4 adds RULE 0 (ARCHITECTURE.md §2): before any of that, a transcript is
+checked against the T0 command grammar. A match executes a tool locally
+with no API call and no session/history mutation at all — T0 turns are not
+part of the conversation the LLM sees.
 """
 from __future__ import annotations
 
@@ -17,7 +22,10 @@ from jarvis.audio import Transcript, transcripts
 from jarvis.config import Settings, get_settings
 from jarvis.core.session import Session
 from jarvis.llm import LLMClient, TurnResult
+from jarvis.routing import match as match_t0
 from jarvis.speech import Speaker
+from jarvis.tools import execute as execute_tool
+from jarvis.tools.registry import ConfirmFn
 
 
 def _fallback_text_for(exc: Exception) -> str:
@@ -46,13 +54,25 @@ async def handle_turn(
     llm: LLMClient,
     transcript: Transcript,
     on_text: Callable[[str], None],
+    tool_confirm: Optional[ConfirmFn] = None,
 ) -> Optional[TurnResult]:
     """Process one user turn against *session*, streaming the reply to on_text.
 
     Returns the TurnResult on success, or None if the call failed (a spoken
     fallback has already been sent to on_text in that case). Split out from
     :func:`converse` so it's unit-testable without real audio or TTS.
+
+    A T0 grammar match (RULE 0) short-circuits this entirely: the matched
+    tool runs locally, its result is spoken, and neither the LLM nor the
+    session's history is touched — that turn returns a synthetic TurnResult
+    with model="t0" so callers can tell T0 turns apart from real LLM turns.
     """
+    t0_call = match_t0(transcript.text)
+    if t0_call is not None:
+        result = await execute_tool(t0_call, confirm=tool_confirm)
+        on_text(result.content)
+        return TurnResult(text=result.content, model="t0", stop_reason="t0_command")
+
     session.add_user_turn(transcript.text)
     try:
         result = await llm.stream_reply(session.system_prompt, session.messages, on_text)

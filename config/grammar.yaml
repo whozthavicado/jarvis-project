@@ -1,0 +1,85 @@
+# T0 command grammar (ARCHITECTURE.md §2, RULE 0) — declarative, no code.
+#
+# Each command has an id, the tool it maps to, optional fixed args, and one
+# or more regex patterns (case-insensitive, matched against the whole
+# transcript after normalization -- see jarvis/routing/grammar.py). Named
+# capture groups become tool args; groups named "minutes"/"n" are coerced
+# to int by the matcher.
+commands:
+  - id: open_app
+    tool: open_app
+    patterns:
+      - '^open (?P<app>.+)$'
+
+  - id: close_app
+    tool: close_app
+    patterns:
+      - '^(?:close|quit) (?P<app>.+)$'
+
+  - id: volume_up
+    tool: volume
+    args: {direction: up}
+    patterns:
+      - '^(?:turn (?:the )?)?volume up$'
+      - '^increase (?:the )?volume$'
+
+  - id: volume_down
+    tool: volume
+    args: {direction: down}
+    patterns:
+      - '^(?:turn (?:the )?)?volume down$'
+      - '^decrease (?:the )?volume$'
+
+  - id: volume_mute
+    tool: volume
+    args: {direction: mute}
+    patterns:
+      - '^mute(?: the volume)?$'
+
+  - id: volume_unmute
+    tool: volume
+    args: {direction: unmute}
+    patterns:
+      - '^unmute(?: the volume)?$'
+
+  - id: play
+    tool: media_control
+    args: {action: play}
+    patterns:
+      - '^play(?: music)?$'
+
+  - id: pause
+    tool: media_control
+    args: {action: pause}
+    patterns:
+      - '^pause(?: music)?$'
+
+  - id: lock_screen
+    tool: lock_screen
+    patterns:
+      - '^lock(?: the)? screen$'
+
+  - id: brightness_up
+    tool: brightness
+    args: {direction: up}
+    patterns:
+      - '^brightness up$'
+      - '^increase brightness$'
+
+  - id: brightness_down
+    tool: brightness
+    args: {direction: down}
+    patterns:
+      - '^brightness down$'
+      - '^decrease brightness$'
+
+  - id: what_time
+    tool: what_time
+    patterns:
+      - "^what(?:'s| is) the time\\??$"
+      - '^what time is it\??$'
+
+  - id: set_timer
+    tool: set_timer
+    patterns:
+      - '^set (?:a )?timer for (?P<minutes>\d+) minutes?$'

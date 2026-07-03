@@ -38,6 +38,8 @@ packages = [
     "jarvis.llm",
     "jarvis.llm.providers",
     "jarvis.core",
+    "jarvis.tools",
+    "jarvis.routing",
 ]
 
 [tool.setuptools.package-data]
