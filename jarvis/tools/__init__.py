@@ -1,14 +1,15 @@
-"""Tool capability surface (ARCHITECTURE.md §6, M4).
+"""Tool capability surface (ARCHITECTURE.md §6, M4/M5).
 
-Importing this package registers every built-in tool (macos.py, files.py)
-via their module-level ``_register_all()`` side effect, so callers just do
-``from jarvis.tools import execute, get_tools`` without needing to know
-which module defines which tool.
+Importing this package registers every built-in tool (macos.py, files.py,
+memory_tools.py) via their module-level ``_register_all()`` side effect, so
+callers just do ``from jarvis.tools import execute, get_tools`` without
+needing to know which module defines which tool.
 """
 from __future__ import annotations
 
 from jarvis.tools import files as _files  # noqa: F401 - registration side effect
 from jarvis.tools import macos as _macos  # noqa: F401 - registration side effect
+from jarvis.tools import memory_tools as _memory_tools  # noqa: F401 - registration side effect
 from jarvis.tools.registry import execute, get_tools, register
 from jarvis.tools.types import ToolCall, ToolDef, ToolResult
 

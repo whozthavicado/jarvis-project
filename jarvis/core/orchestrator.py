@@ -22,6 +22,13 @@ conversation history still lives on the one ``Session``, but which
 model/system-prompt answers a given turn can now vary turn to turn. Without
 a router, behavior is unchanged from before: one tier, fixed for the whole
 session, exactly as ``llm`` and ``session`` were built for.
+
+M5 adds persistent memory (ARCHITECTURE.md §4): ``converse`` now builds its
+``Session`` against the process-wide MemoryStore
+(:func:`jarvis.memory.get_store`), so every turn is logged to SQLite, the
+first turn's context block picks up the core digest + FTS recall, and each
+turn compacts the session's history once it's grown large. The session is
+closed out (Haiku summary + sessions.ended_at) when the listen loop ends.
 """
 from __future__ import annotations
 
@@ -31,6 +38,7 @@ from jarvis.audio import Transcript, transcripts
 from jarvis.config import Settings, get_settings
 from jarvis.core.session import Session
 from jarvis.llm import LLMClient, TurnResult
+from jarvis.memory import get_store
 from jarvis.routing import Router, match as match_t0
 from jarvis.speech import Speaker
 from jarvis.tools import execute as execute_tool
@@ -109,6 +117,7 @@ async def handle_turn(
         return result
 
     session.add_assistant_turn(result.text)
+    await session.compact_if_needed()
     return result
 
 
@@ -132,13 +141,16 @@ async def converse(
             Set False to pin the whole conversation to *tier*, as before M2.
     """
     s = settings or get_settings()
-    session = Session(tier=tier)
+    session = Session(tier=tier, store=get_store(s))
     llm = LLMClient(s, tier=tier)
     router = Router(s) if route else None
 
-    async with Speaker(s) as speaker:
-        async for t in transcripts(s):
-            result = await handle_turn(session, llm, t, speaker.feed, router=router)
-            await speaker.flush()
-            if on_turn is not None:
-                on_turn(t, result)
+    try:
+        async with Speaker(s) as speaker:
+            async for t in transcripts(s):
+                result = await handle_turn(session, llm, t, speaker.feed, router=router)
+                await speaker.flush()
+                if on_turn is not None:
+                    on_turn(t, result)
+    finally:
+        await session.close(s)

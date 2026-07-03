@@ -82,3 +82,13 @@ fallbacks:
 budget:
   soft_daily_usd: 3.0
   hard_daily_usd: 6.0
+
+# M5 persistent memory (ARCHITECTURE.md §4). db_path is the SQLite episodic
+# log + FTS5 recall index -- gitignored, local-only, rebuilds itself (schema
+# only, not content) if deleted. digest_path is the curated core-memory file
+# that's always injected into context -- tracked in git, hand-edited or
+# updated via the `remember` tool. Both resolve relative to the repo root
+# if not absolute; see jarvis/memory/__init__.py.
+memory:
+  db_path: "data/memory.sqlite3"
+  digest_path: "memory/MEMORY.md"
