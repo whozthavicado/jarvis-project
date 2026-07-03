@@ -32,9 +32,14 @@ class MicCapture:
         self.device = s.audio.get("device")
         self.frame_samples: int = self.sample_rate * self.frame_ms // 1000
 
-        self._queue: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=64)
+        # Sized for several seconds of headroom: a consumer that's briefly
+        # busy (e.g. a slow whisper request) must not lose audio.
+        queue_seconds = 8
+        maxsize = max(32, queue_seconds * 1000 // self.frame_ms)
+        self._queue: "asyncio.Queue[bytes]" = asyncio.Queue(maxsize=maxsize)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stream = None  # sounddevice.RawInputStream
+        self.dropped_frames: int = 0
 
     def _callback(self, indata, frames, time_info, status) -> None:
         # Runs on the PortAudio thread. Never block here; hand off to the loop.
@@ -42,10 +47,27 @@ class MicCapture:
             return
         data = bytes(indata)
         try:
-            self._loop.call_soon_threadsafe(self._queue.put_nowait, data)
+            self._loop.call_soon_threadsafe(self._put, data)
         except RuntimeError:
             # Loop is closing; drop the frame.
             pass
+
+    def _put(self, data: bytes) -> None:
+        # Runs on the event loop. If the consumer has fallen behind past our
+        # buffer, drop the oldest frame rather than raising QueueFull —
+        # fresher audio matters more than a complete backlog for live speech.
+        try:
+            self._queue.put_nowait(data)
+        except asyncio.QueueFull:
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            self.dropped_frames += 1
+            try:
+                self._queue.put_nowait(data)
+            except asyncio.QueueFull:
+                pass  # lost a race with another producer; not worth retrying
 
     def start(self) -> None:
         import sounddevice as sd  # lazy: requires PortAudio

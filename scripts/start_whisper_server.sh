@@ -19,6 +19,9 @@ MODEL="${WHISPER_MODEL:-$WHISPER_DIR/models/ggml-base-q5_1.bin}"
 HOST="${WHISPER_HOST:-127.0.0.1}"
 PORT="${WHISPER_PORT:-8080}"
 LANG="${WHISPER_LANG:-auto}"
+# Extra flags passed through to the server binary, e.g. WHISPER_EXTRA_ARGS="--no-gpu"
+# if Metal init hangs on your GPU (seen on some Intel Macs).
+EXTRA_ARGS="${WHISPER_EXTRA_ARGS:-}"
 
 # Server binary location differs across whisper.cpp versions.
 BIN=""
@@ -41,5 +44,6 @@ if [[ ! -f "$MODEL" ]]; then
 fi
 
 echo "Starting whisper server: $BIN"
-echo "  model=$MODEL  host=$HOST  port=$PORT  lang=$LANG"
-exec "$BIN" -m "$MODEL" --host "$HOST" --port "$PORT" -l "$LANG"
+echo "  model=$MODEL  host=$HOST  port=$PORT  lang=$LANG  extra_args=$EXTRA_ARGS"
+# shellcheck disable=SC2086
+exec "$BIN" -m "$MODEL" --host "$HOST" --port "$PORT" -l "$LANG" $EXTRA_ARGS

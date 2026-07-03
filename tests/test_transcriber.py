@@ -58,7 +58,20 @@ async def test_real_speech_passes_through():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bogus", ["", "   ", "...", "Thank you.", "you"])
+@pytest.mark.parametrize(
+    "bogus",
+    [
+        "",
+        "   ",
+        "...",
+        "Thank you.",
+        "you",
+        "[BLANK_AUDIO]",
+        "[blank_audio]",
+        "(silence)",
+        "[SOUND]",
+    ],
+)
 async def test_hallucinations_are_rejected(bogus):
     w = _client_with(bogus)
     t = await w.transcribe(b"\x00\x00" * 8000)

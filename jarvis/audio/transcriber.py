@@ -20,6 +20,10 @@ from jarvis.config import Settings, get_settings
 from jarvis.audio.types import Transcript
 
 _PUNCT_ONLY = re.compile(r"^[\W_]+$", re.UNICODE)
+# whisper.cpp emits bracketed/parenthesized non-speech markers on silence or
+# noise, e.g. "[BLANK_AUDIO]", "(silence)", "[SOUND]" — treat a transcript
+# that is *only* one such tag as a hallucination, same as empty/punctuation-only.
+_TAG_ONLY = re.compile(r"^[\[(][a-z_ ]+[\])]$", re.IGNORECASE)
 
 
 def pcm_to_wav(pcm: bytes, sample_rate: int, channels: int = 1) -> bytes:
@@ -71,6 +75,8 @@ class WhisperClient:
         if not t:
             return True
         if _PUNCT_ONLY.match(t):
+            return True
+        if _TAG_ONLY.match(t):
             return True
         return t in self.blocklist
 
