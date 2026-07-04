@@ -62,6 +62,7 @@ _BUDGET_FALLBACK_TIER = "t1_simple"
 def _fallback_text_for(exc: Exception) -> str:
     """Map an LLM-call failure to a short, speakable apology."""
     import anthropic
+    import httpx
 
     from jarvis.llm.providers import OpenRouterError
 
@@ -77,6 +78,15 @@ def _fallback_text_for(exc: Exception) -> str:
         return "Something went wrong on the server side. Let's try that again."
     if isinstance(exc, OpenRouterError):
         return "My free model backend had trouble with that. Let's try again."
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code in (401, 403):
+            return "My model backend rejected my credentials — check the API key setup."
+        if code == 429:
+            return "I'm being rate limited. Give me a moment and try again."
+        return "Something went wrong on the server side. Let's try that again."
+    if isinstance(exc, httpx.TransportError):
+        return "I can't reach the cloud right now."
     return "Something went wrong there. Let's try that again."
 
 

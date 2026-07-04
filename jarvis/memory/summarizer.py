@@ -1,26 +1,27 @@
-"""Haiku session summaries + history compaction (ARCHITECTURE.md §4.2, M5).
+"""Session summaries + history compaction (ARCHITECTURE.md §4.2, M5),
+provider-agnostic since the free-mode restructure.
 
-Two related jobs, both riding the ``router`` tier's Haiku config from
-``config/settings.yaml`` (the same classifier-only model
-jarvis/routing/classifier.py uses -- summarization isn't a conversation
-tier, so it doesn't need its own settings.models entry):
+Two related jobs, both riding the ``router`` tier's small-model config from
+``config/settings.yaml`` (the same one jarvis/routing/classifier.py uses --
+summarization isn't a conversation tier, so it doesn't need its own
+settings.models entry). In anthropic mode that's Haiku 4.5; in free mode a
+free OpenRouter/NVIDIA model. Calls go through
+:class:`~jarvis.llm.client.LLMClient`, so the summarizer inherits the router
+tier's fallback chain and circuit breaker, and never imports a vendor SDK.
 
-- ``summarize``: one ~$0.001 call condensing a batch of turns to <=150
+- ``summarize``: one small-model call condensing a batch of turns to <=150
   tokens, used both at session end (see Session.close) and by ``compact``.
 - ``compact``: "when history exceeds ~6K tokens, replace turns older than
-  the last 6 with a Haiku-generated summary block" -- a fixed window plus
-  one summary, not server-side compaction, for predictable token cost at
-  this scale.
-
-The ``anthropic`` SDK is imported lazily, same reasoning as elsewhere in
-jarvis/llm and jarvis/routing: this module stays importable with no
-credentials configured.
+  the last 6 with a summary block" -- a fixed window plus one summary, not
+  server-side compaction, for predictable token cost at this scale.
 """
 from __future__ import annotations
 
 from typing import List, Optional
 
 from jarvis.config import Settings, get_settings
+from jarvis.llm.client import LLMClient
+from jarvis.llm.parsing import strip_think
 from jarvis.llm.types import ChatMessage
 
 SUMMARIZER_PROMPT = (
@@ -39,35 +40,28 @@ def _approx_tokens(messages: List[ChatMessage]) -> int:
 async def summarize(
     messages: List[ChatMessage],
     settings: Optional[Settings] = None,
-    client: Optional[object] = None,
+    llm: Optional[LLMClient] = None,
 ) -> str:
-    """One Haiku call summarizing *messages*. Raises on failure -- callers
-    (Session.close, compact) decide what a summarization failure means for
-    them; this function just reports what happened."""
+    """One router-tier call summarizing *messages*. Raises on failure --
+    callers (Session.close, compact) decide what a summarization failure
+    means for them; this function just reports what happened."""
     s = settings or get_settings()
-    cfg = s.models["router"]
-
-    if client is None:
-        import anthropic  # lazy: requires credentials to actually call
-
-        client = anthropic.AsyncAnthropic()
+    if llm is None:
+        llm = LLMClient(s, tier="router")
 
     transcript = "\n".join(f"{m.role}: {m.text}" for m in messages)
-    response = await client.messages.create(
-        model=str(cfg.model),
-        max_tokens=200,
-        system=SUMMARIZER_PROMPT,
-        messages=[{"role": "user", "content": transcript}],
+    result = await llm.stream_reply(
+        SUMMARIZER_PROMPT,
+        [ChatMessage(role="user", text=transcript)],
+        lambda _chunk: None,  # summaries are stored, never spoken
     )
-    return "".join(
-        block.text for block in response.content if getattr(block, "type", None) == "text"
-    ).strip()
+    return strip_think(result.text).strip()
 
 
 async def compact(
     history: List[ChatMessage],
     settings: Optional[Settings] = None,
-    client: Optional[object] = None,
+    llm: Optional[LLMClient] = None,
     keep_last: int = 6,
     token_threshold: int = 6000,
 ) -> List[ChatMessage]:
@@ -84,7 +78,7 @@ async def compact(
 
     older, recent = history[:-keep_last], history[-keep_last:]
     try:
-        summary_text = await summarize(older, settings=settings, client=client)
+        summary_text = await summarize(older, settings=settings, llm=llm)
     except Exception:  # noqa: BLE001 - see docstring
         return recent
 

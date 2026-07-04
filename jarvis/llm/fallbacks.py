@@ -17,17 +17,22 @@ Two pieces LLMClient (client.py) composes on every call:
 
 ``fallback_chain`` walks ``settings.yaml``'s ``fallbacks`` map repeatedly
 from a starting tier, so a tier can degrade through more than one hop (e.g.
-t3_complex → t2_medium → t1_standard) using the same flat map that already
-handles the single t1_simple → t1_standard reliability hop -- a cycle guard
-stops it from bouncing back and forth between two tiers that fall back to
-each other.
+t3_complex → t3_complex_nvidia → t2_medium) -- a cycle guard stops it from
+bouncing back and forth between two tiers that fall back to each other.
+Like ``models``, the ``fallbacks`` map can be namespaced per tier mode
+(``fallbacks.free.<tier>`` / ``fallbacks.anthropic.<tier>``) because the
+free chains hop through NVIDIA-twin tiers that don't belong in the paid
+ladder; a flat map (tier -> tier strings) still works and applies to every
+mode.
 """
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Mapping, Optional
 
-from jarvis.config import Settings, get_settings
+import httpx
+
+from jarvis.config import Settings, get_settings, get_tier_mode
 
 _FAILURE_THRESHOLD = 3
 _COOLDOWN_SECONDS = 300.0  # 5 minutes
@@ -35,7 +40,15 @@ _MAX_CHAIN_HOPS = 3
 
 
 def is_transient(exc: Exception) -> bool:
-    """Whether *exc* is worth falling back on (ARCHITECTURE.md §5.2)."""
+    """Whether *exc* is worth falling back on (ARCHITECTURE.md §5.2).
+
+    Covers both exception families the providers raise: the ``anthropic``
+    SDK's typed errors, and raw ``httpx`` errors from the OpenRouter/NVIDIA
+    providers (429/5xx statuses via ``raise_for_status``, plus transport
+    errors — connect failures, timeouts, dropped reads). Free-tier backends
+    rate-limit *routinely*, so classifying an httpx 429 as transient is what
+    makes the whole free fallback ladder actually fire.
+    """
     import anthropic
 
     from jarvis.llm.providers import OpenRouterError
@@ -48,14 +61,37 @@ def is_transient(exc: Exception) -> bool:
         return exc.status_code >= 500  # 5xx/529 -- not 401/403/400
     if isinstance(exc, OpenRouterError):
         return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        return code == 429 or code >= 500  # not 401/403/400/404
+    if isinstance(exc, httpx.TransportError):  # connect/read/write/pool timeouts & failures
+        return True
     return False
+
+
+def _resolve_fallback_map(settings: Settings) -> Mapping:
+    """The tier -> fallback-tier map for the active tier mode.
+
+    Namespaced shape picks the active mode's map; flat shape (all values are
+    tier-name strings) applies to every mode; a namespaced map with no entry
+    for the active mode just means "no fallbacks configured".
+    """
+    fallbacks = settings.get("fallbacks", {})
+    if not fallbacks:
+        return {}
+    entry = fallbacks.get(get_tier_mode(settings))
+    if isinstance(entry, Mapping):
+        return entry
+    if all(isinstance(v, str) for v in fallbacks.values()):
+        return fallbacks  # flat map
+    return {}
 
 
 def fallback_chain(
     settings: Settings, tier: str, max_hops: int = _MAX_CHAIN_HOPS
 ) -> List[str]:
-    """Ordered tiers to try after *tier*, walking ``settings.fallbacks``."""
-    fallbacks = settings.get("fallbacks", {})
+    """Ordered tiers to try after *tier*, walking the active fallback map."""
+    fallbacks = _resolve_fallback_map(settings)
     chain: List[str] = []
     seen = {tier}
     current = tier

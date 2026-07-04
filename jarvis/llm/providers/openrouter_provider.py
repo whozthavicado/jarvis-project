@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
+from jarvis.llm.parsing import ThinkTagStreamFilter
 from jarvis.llm.types import ChatMessage, TurnResult
 
 _BASE_URL = "https://openrouter.ai/api/v1"
@@ -77,6 +78,15 @@ class OpenRouterProvider:
         model_used = self.model
         usage: Dict[str, Any] = {}
 
+        # Open models often inline chain-of-thought as <think>...</think> in
+        # the content stream itself; filter it so it's neither spoken by TTS
+        # nor recorded in history (see jarvis/llm/parsing.py).
+        def _visible(chunk_text: str) -> None:
+            text_parts.append(chunk_text)
+            on_text(chunk_text)
+
+        think_filter = ThinkTagStreamFilter(_visible)
+
         async with client.stream("POST", "/chat/completions", json=payload) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
@@ -100,12 +110,13 @@ class OpenRouterProvider:
                     delta = choices[0].get("delta") or {}
                     text = delta.get("content")
                     if text:
-                        text_parts.append(text)
-                        on_text(text)
+                        think_filter.feed(text)
                     if choices[0].get("finish_reason"):
                         finish_reason = choices[0]["finish_reason"]
                 if chunk.get("usage"):
                     usage = chunk["usage"]
+
+        think_filter.flush()
 
         return TurnResult(
             text="".join(text_parts),

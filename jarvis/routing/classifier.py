@@ -1,24 +1,30 @@
-"""Stage 2 routing — the Haiku structured-output classifier (ARCHITECTURE.md §2).
+"""Stage 2 routing — the tier classifier (ARCHITECTURE.md §2), provider-agnostic.
 
 Only reached when Stage 1 heuristics (:mod:`jarvis.routing.heuristics`)
-return ``None`` (RULE 5: ambiguous). One Haiku call, ~$0.0005, with
-structured JSON output so parsing can't fail on stray prose.
+return ``None`` (RULE 5: ambiguous). One small-model call using the
+``router`` tier from ``config/settings.yaml`` — Haiku 4.5 in anthropic mode,
+a free OpenRouter/NVIDIA model in free mode. Going through
+:class:`~jarvis.llm.client.LLMClient` (rather than any vendor SDK directly)
+means the classifier automatically gets the router tier's own fallback chain
+and circuit breaker, and flipping tier modes never touches this module.
 
-Uses the ``router`` tier from ``config/settings.yaml`` (Haiku 4.5) — not one
-of the four conversation tiers, this is purely the classifier's own model.
-The ``anthropic`` SDK is imported lazily, same reasoning as the other
-providers: this module stays importable with no credentials configured.
-
-Failure here (no credentials, network error, malformed response) is not
-fatal to the turn — the caller falls back to a safe default tier rather than
-letting a routing failure crash the conversation (see jarvis/routing/router.py).
+Structured output: Anthropic's schema-enforced ``output_config`` isn't
+available across all backends through the shared Provider interface, so the
+"parsing can't fail" guarantee moved from API-level schema enforcement to
+prompt-enforced JSON plus :func:`~jarvis.llm.parsing.extract_json_object`,
+which digs the first JSON object out of prose, code fences, or think tags.
+If even that fails, the caller falls back to a safe default tier rather
+than letting a routing failure crash the conversation (see
+jarvis/routing/router.py) — same fail-soft contract as before.
 """
 from __future__ import annotations
 
-import json
 from typing import Optional
 
 from jarvis.config import Settings
+from jarvis.llm.client import LLMClient
+from jarvis.llm.parsing import extract_json_object
+from jarvis.llm.types import ChatMessage
 
 ROUTER_PROMPT = """You route a spoken user request to one of four model tiers.
 
@@ -31,7 +37,10 @@ T2: multi-step reasoning, coding, planning, research spanning many tool
 T3: hardest long-horizon work only — reserve this for requests that
     explicitly ask for maximum effort or are clearly beyond T2.
 
-Pick the cheapest tier that can genuinely handle the request."""
+Pick the cheapest tier that can genuinely handle the request.
+
+Respond with ONLY a single-line JSON object — no prose, no code fences:
+{"tier": "T1" or "T1.5" or "T2" or "T3", "intent": "<3-6 word summary>", "tools_needed": ["<tool name>", ...]}"""
 
 _TIER_BY_LABEL = {
     "T1": "t1_simple",
@@ -40,43 +49,24 @@ _TIER_BY_LABEL = {
     "T3": "t3_complex",
 }
 
-_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "tier": {"type": "string", "enum": ["T1", "T1.5", "T2", "T3"]},
-        "intent": {"type": "string"},
-        "tools_needed": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": ["tier", "intent", "tools_needed"],
-    "additionalProperties": False,
-}
 
+async def classify(text: str, settings: Settings, llm: Optional[LLMClient] = None) -> str:
+    """Ask the router-tier model which tier *text* belongs to.
 
-async def classify(text: str, settings: Settings, client: Optional[object] = None) -> str:
-    """Ask the Haiku router model which tier *text* belongs to.
-
-    Returns a settings.yaml tier key (e.g. "t1_standard"). Raises on
-    failure — callers decide the fallback policy (see router.py), this
-    function just reports what happened.
+    Returns a settings.yaml tier key (e.g. "t1_standard"). Raises on any
+    failure — call errors, unparseable output, unknown label — and callers
+    decide the fallback policy (see router.py); this function just reports
+    what happened. *llm* is injectable for tests and so the Router can share
+    its cached per-tier client.
     """
-    cfg = settings.models["router"]
+    if llm is None:
+        llm = LLMClient(settings, tier="router")
 
-    if client is None:
-        import anthropic  # lazy: requires credentials to actually call
-
-        client = anthropic.AsyncAnthropic()
-
-    response = await client.messages.create(
-        model=str(cfg.model),
-        max_tokens=int(cfg.get("max_tokens", 1000)),
-        system=ROUTER_PROMPT,
-        messages=[{"role": "user", "content": text}],
-        output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
+    result = await llm.stream_reply(
+        ROUTER_PROMPT,
+        [ChatMessage(role="user", text=text)],
+        lambda _chunk: None,  # classifier output is never spoken
     )
-
-    raw = "".join(
-        block.text for block in response.content if getattr(block, "type", None) == "text"
-    )
-    parsed = json.loads(raw)
-    label = parsed["tier"]
+    parsed = extract_json_object(result.text)
+    label = str(parsed["tier"]).strip().upper()
     return _TIER_BY_LABEL[label]

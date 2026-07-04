@@ -3,14 +3,23 @@
 Reads ``config/settings.yaml`` once and exposes it as nested, attribute-style
 namespaces so callers can write ``settings.audio.sample_rate`` instead of
 threading dicts around. Kept deliberately tiny — no schema framework.
+
+Also home to :func:`get_tier_mode` — the one switch that decides whether the
+app runs in "free" mode (OpenRouter + NVIDIA NIM, $0) or "anthropic" mode
+(Claude models, paid). It lives here rather than in jarvis/llm because both
+the model table (jarvis/llm/factory.py) and the fallback map
+(jarvis/llm/fallbacks.py) need it without importing each other.
 """
 from __future__ import annotations
 
 import functools
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
+
+DEFAULT_TIER_MODE = "free"
 
 _DEFAULT_PATH = Path(__file__).resolve().parent.parent / "config" / "settings.yaml"
 
@@ -65,3 +74,15 @@ def load_settings(path: "str | Path | None" = None) -> Settings:
 def get_settings() -> Settings:
     """Process-wide cached settings (the common entry point)."""
     return load_settings()
+
+
+def get_tier_mode(settings: Settings) -> str:
+    """Which model table / fallback map the app runs on.
+
+    Resolution order: ``TIER_MODE`` env var (so flipping modes never needs a
+    file edit), then ``tier_mode:`` in settings.yaml, then "free". The value
+    is a key into ``models.<mode>`` / ``fallbacks.<mode>`` — validation that
+    the mode actually exists happens where those tables are read (factory /
+    fallbacks), which can produce a far more useful error message.
+    """
+    return os.environ.get("TIER_MODE") or str(settings.get("tier_mode", DEFAULT_TIER_MODE))

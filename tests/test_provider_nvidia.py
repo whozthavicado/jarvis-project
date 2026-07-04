@@ -89,6 +89,30 @@ async def test_request_shape_sends_system_message_and_include_usage_option():
 
 
 @pytest.mark.asyncio
+async def test_inline_think_blocks_are_filtered_from_speech_and_text():
+    # NVIDIA's reasoning NIMs (DeepSeek-R1, Llama-Nemotron) inline their
+    # chain-of-thought as <think>...</think> in content — documented by
+    # NVIDIA. It must never reach TTS or the returned text, even when the
+    # tags are split across SSE chunks.
+    body = _sse_body(
+        {"choices": [{"delta": {"content": "<thi"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "nk>chain of thought here</th"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "ink>The answer"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": " is four."}, "finish_reason": "stop"}]},
+    )
+    provider = NvidiaProvider(model="deepseek-ai/deepseek-r1", client=_client_with(body))
+
+    seen = []
+    result = await provider.stream_reply(
+        system_prompt="sys", messages=[ChatMessage(role="user", text="2+2?")], on_text=seen.append
+    )
+
+    assert "".join(seen) == "The answer is four."
+    assert result.text == "The answer is four."
+    assert "<think>" not in result.text
+
+
+@pytest.mark.asyncio
 async def test_http_error_status_raises():
     client = httpx.AsyncClient(
         base_url="https://integrate.api.nvidia.com/v1",

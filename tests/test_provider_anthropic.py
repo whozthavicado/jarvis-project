@@ -142,6 +142,22 @@ async def test_request_uses_configured_model_effort_and_wraps_system_prompt():
 
 
 @pytest.mark.asyncio
+async def test_thinking_none_omits_the_param_entirely():
+    # Fable 5 400s on an explicit thinking config (ARCHITECTURE.md §2) — the
+    # param must be absent, not {"type": "none"}.
+    fake = _FakeAnthropicClient([], _final_message("ok"))
+    provider = AnthropicProvider(model="claude-fable-5", thinking="none", client=fake)
+
+    await provider.stream_reply(
+        system_prompt="sys",
+        messages=[ChatMessage(role="user", text="hi")],
+        on_text=lambda _: None,
+    )
+
+    assert "thinking" not in fake.messages.last_call_kwargs
+
+
+@pytest.mark.asyncio
 async def test_refusal_is_surfaced_on_result():
     fake = _FakeAnthropicClient([], _final_message("", stop_reason="refusal"))
     provider = AnthropicProvider(model="claude-sonnet-5", client=fake)

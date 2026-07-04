@@ -1,27 +1,29 @@
-"""Milestone 2 demo: a real streaming conversation, now multi-provider.
+"""Milestone 2 demo: a real streaming conversation, multi-provider + tier modes.
 
-Unlike Milestone 1 (which echoed the transcript back), this asks Claude (or
-another configured provider) and speaks the streamed reply, with
-conversation history carried across turns.
+Unlike Milestone 1 (which echoed the transcript back), this asks the
+configured model and speaks the streamed reply, with conversation history
+carried across turns.
 
-There's no automatic routing between tiers yet (that's a later milestone),
-so pick one for the whole session with --tier. See config/settings.yaml ->
-models for what's configured; as of this milestone:
-
-    t1_simple    OpenRouter free (Gemma 4 31B) -- casual/simple only
-    t1_standard  Sonnet 5, paid Anthropic (default)
+Which models answer depends on the tier mode (README "Two modes"): the
+default is free mode (OpenRouter free tier + NVIDIA NIM, $0); set
+TIER_MODE=anthropic for the paid Claude table. --tier picks one configured
+tier for the whole session; --check works for ANY tier key in the active
+mode's table (including the *_nvidia fallback twins and the router
+classifier model), because it talks to that tier's provider directly with a
+literal system prompt.
 
 Run modes:
 
-    python -m scripts.milestone2                       # live, Sonnet 5
-    python -m scripts.milestone2 --tier t1_simple       # live, OpenRouter free
-    python -m scripts.milestone2 --text                 # type instead of speaking
-    python -m scripts.milestone2 --check                # verify credentials for --tier
+    python -m scripts.milestone2                                # live voice
+    python -m scripts.milestone2 --text                         # type instead of speaking
+    python -m scripts.milestone2 --check                        # verify t1_standard's provider
+    python -m scripts.milestone2 --check --tier t1_standard_nvidia   # verify the NVIDIA engine
+    TIER_MODE=anthropic python -m scripts.milestone2 --check    # verify Sonnet (pro mode)
 
 Prereqs:
-    * For t1_standard (and any Anthropic tier): ANTHROPIC_API_KEY set, or
-      `ant auth login` run once.
-    * For t1_simple: OPENROUTER_API_KEY set (https://openrouter.ai/keys).
+    * Free mode: OPENROUTER_API_KEY (openrouter.ai/keys) and, for the
+      fallback engine, NVIDIA_API_KEY (build.nvidia.com). See .env.example.
+    * Pro mode: additionally ANTHROPIC_API_KEY, or `ant auth login` run once.
     * Everything Milestone 1 needed: a running whisper.cpp server, PortAudio.
 """
 from __future__ import annotations
@@ -113,8 +115,9 @@ def main() -> None:
     parser.add_argument(
         "--tier",
         default="t1_standard",
-        help="which configured tier to use (see config/settings.yaml -> models); "
-        "e.g. t1_simple (OpenRouter free) or t1_standard (Sonnet 5, default)",
+        help="which configured tier to use (see config/settings.yaml -> models.<mode>); "
+        "any tier key in the active mode's table works with --check, including "
+        "the *_nvidia fallback twins and 'router'",
     )
     args = parser.parse_args()
 

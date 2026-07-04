@@ -31,74 +31,148 @@ tts:
   rate: 190               # words per minute
   max_inflight: 1         # sentences spoken concurrently (1 = strictly sequential)
 
-# Model routing: each tier names a provider + model. Switching providers or
-# models is a config change here, never a code change -- jarvis/llm/factory.py
-# reads this and builds the matching Provider. See ARCHITECTURE.md §6/§8 and
-# the provider-strategy research/decision recorded 2026-07-02.
+# Which model table + fallback map below is live: "free" (OpenRouter free
+# tier + NVIDIA NIM, $0 -- the production default) or "anthropic" (Claude
+# models, paid -- the future upgrade path). The TIER_MODE env var overrides
+# this, so flipping modes never needs a file edit. See jarvis/config.py's
+# get_tier_mode and jarvis/llm/factory.py's resolve_models.
+tier_mode: free
+
+# Model routing: each tier names a provider + model, namespaced per tier
+# mode. Switching providers, models, or the whole mode is a config change
+# here, never a code change -- jarvis/llm/factory.py reads this and builds
+# the matching Provider. See ARCHITECTURE.md §2/§6 and the free-mode
+# restructure decision (2026-07-03).
 #
-# t1_simple now routes to OpenRouter's free tier instead of Haiku 4.5 (was
-# the "simple" tier's backend before this decision) -- Haiku's remaining job
-# is the M2 routing classifier below. Model ID verified live against
-# OpenRouter's catalog (google/gemma-4-31b-it:free); that catalog rotates
-# with little notice, which is exactly why t1_simple has a fallback chain.
+# FREE MODE notes:
+# - OpenRouter :free model IDs verified live against
+#   openrouter.ai/collections/free-models on 2026-07-03. That catalog
+#   rotates with little notice (typical free limits: ~20 req/min, ~200
+#   req/day per model), which is exactly why every tier has an NVIDIA-twin
+#   fallback (see fallbacks.free below).
+# - NVIDIA NIM model IDs confirmed against NVIDIA's own docs, but NOT yet
+#   live-verified (no NVIDIA_API_KEY in the dev environment). deepseek-r1 is
+#   "free during preview" per NVIDIA -- recheck periodically.
+# - The *_nvidia tiers are pure fallback targets, never router-resolved, so
+#   they need no Layer B prompt file: LLMClient reuses the system prompt
+#   resolved for the chain's starting tier across every hop.
+# - Reasoning models here (deepseek-r1, nemotron reasoning variants) inline
+#   <think> blocks in their output; the OpenRouter/NVIDIA providers filter
+#   those before TTS ever sees them (jarvis/llm/parsing.py).
 #
-# t1_simple_nvidia is a second, independent free option -- NVIDIA NIM's
-# hosted catalog (build.nvidia.com), also free with rate limits. It's a pure
-# fallback target, never the router's initially-resolved tier, so it doesn't
-# need its own Layer B prompt file (LLMClient reuses whatever system_prompt
-# the caller resolved for the *original* tier across every hop in the
-# chain -- see jarvis/llm/client.py). Model ID not yet live-verified in this
-# environment (no NVIDIA_API_KEY here) -- confirmed via NVIDIA's own docs as
-# a real catalog entry; re-check against your account's available models if
-# it's been a while.
+# ANTHROPIC MODE notes:
+# - This is the original pre-free-mode table, preserved intact as the paid
+#   upgrade path. t1_simple stays on OpenRouter free even here (that was the
+#   2026-07-02 provider-strategy decision).
+# - thinking: none on t3_complex is required -- Fable 5 400s on an explicit
+#   thinking config (ARCHITECTURE.md §2). On router it just keeps the
+#   classifier snappy.
 models:
-  t1_simple:
-    provider: openrouter
-    model: "google/gemma-4-31b-it:free"
-    max_tokens: 1024
-  t1_simple_nvidia:
-    provider: nvidia
-    model: "meta/llama-3.1-8b-instruct"
-    max_tokens: 1024
-  t1_standard:
-    provider: anthropic
-    model: "claude-sonnet-5"
-    max_tokens: 8000
-    effort: medium
-  t2_medium:
-    provider: anthropic
-    model: "claude-opus-4-8"
-    max_tokens: 16000
-    effort: high
-  t3_complex:
-    provider: anthropic
-    model: "claude-fable-5"
-    max_tokens: 32000
-    effort: high
-  router:
-    provider: anthropic
-    model: "claude-haiku-4-5"
-    max_tokens: 1000
+  free:
+    t1_simple:
+      provider: openrouter
+      model: "google/gemma-4-31b-it:free"
+      max_tokens: 1024
+    t1_simple_nvidia:
+      provider: nvidia
+      model: "nvidia/nemotron-nano-9b-v2"
+      max_tokens: 1024
+    t1_standard:
+      provider: openrouter
+      model: "nvidia/nemotron-3-nano-30b-a3b:free"
+      max_tokens: 2048
+    t1_standard_nvidia:
+      provider: nvidia
+      model: "nvidia/llama-3.3-nemotron-super-49b-v1"
+      max_tokens: 2048
+    t2_medium:
+      provider: openrouter
+      model: "nvidia/nemotron-3-super-120b-a12b:free"
+      max_tokens: 4096
+    t2_medium_nvidia:
+      provider: nvidia
+      model: "nvidia/llama-3.3-nemotron-super-49b-v1"
+      max_tokens: 4096
+    t3_complex:
+      provider: openrouter
+      model: "nvidia/nemotron-3-ultra-550b-a55b:free"
+      max_tokens: 8192
+    t3_complex_nvidia:
+      provider: nvidia
+      model: "deepseek-ai/deepseek-r1"
+      max_tokens: 8192
+    router:
+      provider: openrouter
+      model: "openai/gpt-oss-20b:free"
+      max_tokens: 400
+    router_nvidia:
+      provider: nvidia
+      model: "nvidia/nemotron-nano-9b-v2"
+      max_tokens: 400
+  anthropic:
+    t1_simple:
+      provider: openrouter
+      model: "google/gemma-4-31b-it:free"
+      max_tokens: 1024
+    t1_simple_nvidia:
+      provider: nvidia
+      model: "nvidia/nemotron-nano-9b-v2"
+      max_tokens: 1024
+    t1_standard:
+      provider: anthropic
+      model: "claude-sonnet-5"
+      max_tokens: 8000
+      effort: medium
+    t2_medium:
+      provider: anthropic
+      model: "claude-opus-4-8"
+      max_tokens: 16000
+      effort: high
+    t3_complex:
+      provider: anthropic
+      model: "claude-fable-5"
+      max_tokens: 32000
+      effort: high
+      thinking: none
+    router:
+      provider: anthropic
+      model: "claude-haiku-4-5"
+      max_tokens: 1000
+      thinking: none
 
 # If a tier's provider call fails *before* streaming any text (and the
 # failure is transient -- see jarvis/llm/fallbacks.py's is_transient), try
 # this other tier's provider instead. jarvis/llm/client.py walks this map
-# repeatedly (fallback_chain), so a tier can degrade through more than one
-# hop:
-#   t1_simple -> t1_simple_nvidia -> t1_standard
-#     Two independent free catalogs (OpenRouter, then NVIDIA NIM) before
-#     ever touching paid Sonnet -- an *upgrade* ladder, not a degrade one:
-#     both free tiers are flaky/rotate, Sonnet is the reliable backstop.
-#   t3_complex -> t2_medium -> t1_standard
-#     Mirrors ARCHITECTURE.md §5.1's Fable -> Opus -> Sonnet degrade-under-
-#     load ladder.
-# A per-tier circuit breaker (3 consecutive failures -> 5 min cooldown)
-# skips a tripped tier without even trying it.
+# repeatedly (fallback_chain, up to 3 hops), so a tier degrades through a
+# whole chain; a per-tier circuit breaker (3 consecutive failures -> 5 min
+# cooldown) skips a tripped tier without even trying it. Namespaced per
+# tier mode because the free chains hop through NVIDIA-twin tiers that
+# don't belong in the paid ladder.
+#
+# free: every OpenRouter tier falls to its NVIDIA twin first (independent
+#   catalog, independent rate limits), then degrades down the tier ladder --
+#   e.g. t3_complex tries: nemotron-ultra -> deepseek-r1 -> nemotron-super
+#   -> nemotron-49b. Worst case Z.E.R.O answers with a smaller free model
+#   instead of not answering at all; nothing in this map ever costs money.
+# anthropic: the original ladder -- t1_simple's two free hops upgrade to
+#   paid Sonnet as the reliable backstop; t3/t2 degrade per ARCHITECTURE.md
+#   §5.1 (Fable -> Opus -> Sonnet).
 fallbacks:
-  t1_simple: t1_simple_nvidia
-  t1_simple_nvidia: t1_standard
-  t3_complex: t2_medium
-  t2_medium: t1_standard
+  free:
+    t1_simple: t1_simple_nvidia
+    t1_simple_nvidia: t1_standard
+    t1_standard: t1_standard_nvidia
+    t1_standard_nvidia: t1_simple
+    t2_medium: t2_medium_nvidia
+    t2_medium_nvidia: t1_standard
+    t3_complex: t3_complex_nvidia
+    t3_complex_nvidia: t2_medium
+    router: router_nvidia
+  anthropic:
+    t1_simple: t1_simple_nvidia
+    t1_simple_nvidia: t1_standard
+    t3_complex: t2_medium
+    t2_medium: t1_standard
 
 budget:
   soft_daily_usd: 3.0

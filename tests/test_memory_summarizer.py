@@ -1,35 +1,26 @@
-"""Summarizer/compaction tests — a fake Anthropic client, no network."""
-from types import SimpleNamespace
+"""Summarizer/compaction tests — a stub LLMClient, no vendor SDK, no network.
 
+Provider-agnostic since the free-mode restructure: the summarizer talks to
+whatever backs the "router" tier through the LLMClient interface.
+"""
 import pytest
 
 from jarvis.config import get_settings
-from jarvis.llm.types import ChatMessage
-from jarvis.memory.summarizer import compact, summarize
+from jarvis.llm.types import ChatMessage, TurnResult
+from jarvis.memory.summarizer import SUMMARIZER_PROMPT, compact, summarize
 
 
-class _FakeTextBlock:
-    def __init__(self, text: str):
-        self.type = "text"
-        self.text = text
-
-
-class _FakeMessages:
-    def __init__(self, reply: str, error: Exception = None):
+class _StubLLM:
+    def __init__(self, reply: str = "summary text", error: Exception = None):
         self._reply = reply
         self._error = error
-        self.last_call_kwargs = None
+        self.calls = []
 
-    async def create(self, **kwargs):
-        self.last_call_kwargs = kwargs
+    async def stream_reply(self, system_prompt, messages, on_text):
+        self.calls.append((system_prompt, messages))
         if self._error is not None:
             raise self._error
-        return SimpleNamespace(content=[_FakeTextBlock(self._reply)])
-
-
-class _FakeClient:
-    def __init__(self, reply: str = "summary text", error: Exception = None):
-        self.messages = _FakeMessages(reply, error)
+        return TurnResult(text=self._reply, model="stub-router", stop_reason="stop")
 
 
 def _msgs(n: int, text: str = "word ") -> list:
@@ -37,18 +28,28 @@ def _msgs(n: int, text: str = "word ") -> list:
 
 
 @pytest.mark.asyncio
-async def test_summarize_uses_router_model_and_returns_text():
-    fake = _FakeClient(reply="They discussed dinner plans.")
-    result = await summarize(_msgs(4), settings=get_settings(), client=fake)
+async def test_summarize_sends_prompt_and_transcript_and_returns_text():
+    llm = _StubLLM(reply="They discussed dinner plans.")
+    result = await summarize(_msgs(4), settings=get_settings(), llm=llm)
 
     assert result == "They discussed dinner plans."
-    assert fake.messages.last_call_kwargs["model"] == "claude-haiku-4-5"
+    system_prompt, messages = llm.calls[0]
+    assert system_prompt == SUMMARIZER_PROMPT
+    assert messages[0].role == "user"
+    assert "user: " in messages[0].text and "assistant: " in messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_summarize_strips_think_tags_from_reasoning_models():
+    llm = _StubLLM(reply="<think>Let me condense this...</think>A concise summary.")
+    result = await summarize(_msgs(4), settings=get_settings(), llm=llm)
+    assert result == "A concise summary."
 
 
 @pytest.mark.asyncio
 async def test_compact_is_noop_under_threshold():
     history = _msgs(4)
-    result = await compact(history, settings=get_settings(), client=_FakeClient())
+    result = await compact(history, settings=get_settings(), llm=_StubLLM())
     assert result == history
 
 
@@ -56,16 +57,16 @@ async def test_compact_is_noop_under_threshold():
 async def test_compact_is_noop_when_history_shorter_than_keep_last():
     # long text but too few turns to ever split into "older"/"recent"
     history = _msgs(3, text="word " * 2000)
-    result = await compact(history, settings=get_settings(), client=_FakeClient(), keep_last=6)
+    result = await compact(history, settings=get_settings(), llm=_StubLLM(), keep_last=6)
     assert result == history
 
 
 @pytest.mark.asyncio
 async def test_compact_summarizes_older_turns_and_keeps_recent_window():
     history = _msgs(20, text="word " * 200)  # well past the token threshold
-    fake = _FakeClient(reply="Condensed summary.")
+    llm = _StubLLM(reply="Condensed summary.")
 
-    result = await compact(history, settings=get_settings(), client=fake, keep_last=6, token_threshold=100)
+    result = await compact(history, settings=get_settings(), llm=llm, keep_last=6, token_threshold=100)
 
     assert len(result) == 7  # 1 summary message + 6 kept
     assert result[0].role == "user"
@@ -76,8 +77,8 @@ async def test_compact_summarizes_older_turns_and_keeps_recent_window():
 @pytest.mark.asyncio
 async def test_compact_falls_back_to_truncation_when_summarize_fails():
     history = _msgs(20, text="word " * 200)
-    fake = _FakeClient(error=RuntimeError("no credentials"))
+    llm = _StubLLM(error=RuntimeError("no credentials"))
 
-    result = await compact(history, settings=get_settings(), client=fake, keep_last=6, token_threshold=100)
+    result = await compact(history, settings=get_settings(), llm=llm, keep_last=6, token_threshold=100)
 
     assert result == history[-6:]

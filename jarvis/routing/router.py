@@ -34,7 +34,10 @@ class Router:
         if tier is not None:
             return tier
         try:
-            return await classifier.classify(text, self._settings)
+            # Share the cached per-tier client so the classifier gets the
+            # router tier's fallback chain + circuit breaker without
+            # rebuilding a provider every ambiguous turn.
+            return await classifier.classify(text, self._settings, llm=self.llm_for("router"))
         except Exception:  # noqa: BLE001 - a routing failure must not crash the turn
             return _CLASSIFIER_FALLBACK_TIER
 

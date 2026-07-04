@@ -117,6 +117,25 @@ async def test_does_not_fall_back_on_a_non_transient_error_even_before_emitting(
 
 
 @pytest.mark.asyncio
+async def test_httpx_429_from_a_free_backend_falls_through_the_chain():
+    # The canonical free-mode failure: OpenRouter's free tier rate-limits
+    # (raise_for_status -> httpx.HTTPStatusError 429) and the NVIDIA twin
+    # answers instead. This is the load-bearing path of "Z.E.R.O Free".
+    resp = httpx.Response(429, request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"))
+    rate_limited = httpx.HTTPStatusError("429", request=resp.request, response=resp)
+
+    primary = _StubProvider(error=rate_limited)
+    fallback = _StubProvider(result=_result("nvidia says hi"))
+    client = LLMClient(provider=primary, fallback_provider=fallback, circuit_breaker=CircuitBreaker())
+
+    seen = []
+    result = await client.stream_reply("sys", [ChatMessage(role="user", text="hi")], seen.append)
+
+    assert result.text == "nvidia says hi"
+    assert seen == ["nvidia says hi"]
+
+
+@pytest.mark.asyncio
 async def test_no_fallback_configured_reraises_immediately():
     primary = _StubProvider(error=ValueError("nope"))
     client = LLMClient(provider=primary, circuit_breaker=CircuitBreaker())
@@ -144,25 +163,32 @@ async def test_circuit_breaker_trips_after_three_failures_and_skips_primary():
     assert primary.calls == 3  # unchanged -- primary was never called this time
 
 
-def test_t1_simple_resolves_configured_fallback_chain_through_nvidia_to_t1_standard():
-    from jarvis.llm.providers import AnthropicProvider, NvidiaProvider, OpenRouterProvider
+def test_free_mode_t1_simple_chain_alternates_free_catalogs(monkeypatch):
+    from jarvis.llm.providers import NvidiaProvider, OpenRouterProvider
 
+    monkeypatch.delenv("TIER_MODE", raising=False)
     client = LLMClient(get_settings(), tier="t1_simple", circuit_breaker=CircuitBreaker())
-    assert client._chain == ["t1_simple", "t1_simple_nvidia", "t1_standard"]
+    # OpenRouter -> its NVIDIA twin -> the bigger OpenRouter tier -> its twin:
+    # four free models tried before the turn gives up, zero paid calls.
+    assert client._chain == ["t1_simple", "t1_simple_nvidia", "t1_standard", "t1_standard_nvidia"]
     assert isinstance(client._providers["t1_simple"], OpenRouterProvider)
     assert isinstance(client._provider_for("t1_simple_nvidia"), NvidiaProvider)
-    assert isinstance(client._provider_for("t1_standard"), AnthropicProvider)
-    assert client._provider_for("t1_standard").model == "claude-sonnet-5"
+    assert isinstance(client._provider_for("t1_standard"), OpenRouterProvider)
 
 
-def test_t1_standard_has_no_configured_fallback():
-    client = LLMClient(get_settings(), tier="t1_standard", circuit_breaker=CircuitBreaker())
-    assert client._chain == ["t1_standard"]
+def test_free_mode_t3_complex_degrades_through_free_reasoning_models(monkeypatch):
+    monkeypatch.delenv("TIER_MODE", raising=False)
+    client = LLMClient(get_settings(), tier="t3_complex", circuit_breaker=CircuitBreaker())
+    assert client._chain == ["t3_complex", "t3_complex_nvidia", "t2_medium", "t2_medium_nvidia"]
 
 
-def test_t3_complex_degrades_through_two_hops():
+def test_anthropic_mode_keeps_the_original_paid_ladder(monkeypatch):
+    from jarvis.llm.providers import AnthropicProvider
+
+    monkeypatch.setenv("TIER_MODE", "anthropic")
     client = LLMClient(get_settings(), tier="t3_complex", circuit_breaker=CircuitBreaker())
     assert client._chain == ["t3_complex", "t2_medium", "t1_standard"]
+    assert isinstance(client._providers["t3_complex"], AnthropicProvider)
 
 
 def test_chain_walking_stops_on_a_cycle():

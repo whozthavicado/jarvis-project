@@ -41,11 +41,17 @@ class AnthropicProvider:
         model: str,
         max_tokens: int = 8000,
         effort: str = "medium",
+        thinking: str = "adaptive",
         client: Optional[Any] = None,
     ):
+        """*thinking* is the ``thinking.type`` to request, or ``"none"`` to
+        omit the parameter entirely — required for Fable 5, where an explicit
+        ``thinking`` config 400s (ARCHITECTURE.md §2), and the safe choice
+        for the Haiku router classifier."""
         self.model = model
         self.max_tokens = max_tokens
         self.effort = effort
+        self.thinking = thinking
         self._client = client  # injectable for tests; lazily created otherwise
 
     def _get_client(self) -> Any:
@@ -73,14 +79,17 @@ class AnthropicProvider:
         ]
         api_messages = [{"role": m.role, "content": m.text} for m in messages]
 
-        async with client.messages.stream(
-            model=self.model,
-            max_tokens=max_tokens,
-            system=system_blocks,
-            thinking={"type": "adaptive"},
-            output_config={"effort": self.effort},
-            messages=api_messages,
-        ) as stream:
+        request_kwargs: dict = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "system": system_blocks,
+            "output_config": {"effort": self.effort},
+            "messages": api_messages,
+        }
+        if self.thinking != "none":
+            request_kwargs["thinking"] = {"type": self.thinking}
+
+        async with client.messages.stream(**request_kwargs) as stream:
             async for event in stream:
                 if event.type == "content_block_delta":
                     delta = event.delta

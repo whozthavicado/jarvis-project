@@ -17,6 +17,11 @@ def _status_error(code: int) -> anthropic.APIStatusError:
     return anthropic.APIStatusError("boom", response=resp, body=None)
 
 
+def _httpx_status_error(code: int) -> httpx.HTTPStatusError:
+    resp = httpx.Response(code, request=_req())
+    return httpx.HTTPStatusError("boom", request=_req(), response=resp)
+
+
 @pytest.mark.parametrize(
     "exc,expected",
     [
@@ -35,10 +40,47 @@ def _status_error(code: int) -> anthropic.APIStatusError:
         ),
         (OpenRouterError("free model unavailable"), True),
         (ValueError("some bug"), False),
+        # Raw httpx errors -- what the OpenRouter/NVIDIA providers actually
+        # raise. Free-tier 429s being transient is what makes the whole free
+        # fallback ladder fire at all.
+        (_httpx_status_error(429), True),
+        (_httpx_status_error(500), True),
+        (_httpx_status_error(503), True),
+        (_httpx_status_error(401), False),
+        (_httpx_status_error(404), False),
+        (httpx.ConnectError("no route", request=_req()), True),
+        (httpx.ReadTimeout("slow", request=_req()), True),
     ],
 )
 def test_is_transient_classification(exc, expected):
     assert is_transient(exc) is expected
+
+
+def test_fallback_map_is_mode_namespaced(monkeypatch):
+    from jarvis.config import Settings
+
+    s = Settings(
+        {
+            "tier_mode": "free",
+            "fallbacks": {
+                "free": {"a": "a_nvidia"},
+                "anthropic": {"a": "b"},
+            },
+        }
+    )
+    monkeypatch.delenv("TIER_MODE", raising=False)
+    assert fallback_chain(s, "a") == ["a_nvidia"]
+
+    monkeypatch.setenv("TIER_MODE", "anthropic")
+    assert fallback_chain(s, "a") == ["b"]
+
+
+def test_namespaced_fallbacks_with_missing_mode_mean_no_fallbacks(monkeypatch):
+    from jarvis.config import Settings
+
+    monkeypatch.setenv("TIER_MODE", "some-new-mode")
+    s = Settings({"fallbacks": {"free": {"a": "b"}}})
+    assert fallback_chain(s, "a") == []
 
 
 def test_fallback_chain_walks_multiple_hops():

@@ -25,3 +25,6 @@ data/
 
 # Claude Code local (personal) settings
 .claude/settings.local.json
+
+# Secrets — .env.example is the tracked template, the real .env never is
+.env

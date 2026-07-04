@@ -88,6 +88,25 @@ async def test_request_shape_sends_system_as_first_message():
 
 
 @pytest.mark.asyncio
+async def test_inline_think_blocks_are_filtered_from_speech_and_text():
+    # Open reasoning models sometimes inline <think> spans in content; a
+    # leaked span would be spoken aloud by TTS (see jarvis/llm/parsing.py).
+    body = _sse_body(
+        {"choices": [{"delta": {"content": "<think>hmm, easy</think>"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "Paris."}, "finish_reason": "stop"}]},
+    )
+    provider = OpenRouterProvider(model="x:free", client=_client_with(body))
+
+    seen = []
+    result = await provider.stream_reply(
+        system_prompt="sys", messages=[ChatMessage(role="user", text="capital of France?")], on_text=seen.append
+    )
+
+    assert "".join(seen) == "Paris."
+    assert result.text == "Paris."
+
+
+@pytest.mark.asyncio
 async def test_mid_stream_error_raises_and_preserves_already_emitted_text():
     # OpenRouter signals a mid-stream failure as a normal SSE chunk with an
     # "error" field and HTTP 200 — not a raised HTTP status. See the docstring

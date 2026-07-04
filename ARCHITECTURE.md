@@ -104,6 +104,20 @@ Total Z.E.R.O footprint              ~450–600 MB   ✅ well under budget
 
 > Fable 5 caveats (design-relevant): thinking is always on (omit the `thinking` param — an explicit config 400s), safety classifiers can return `stop_reason: "refusal"`, it requires 30-day data retention on the org, and single turns can run minutes. Always send it with the server-side `fallbacks` parameter targeting Opus 4.8 (see §5).
 
+### Tier modes (added 2026-07-03)
+
+The table above is the **anthropic** (paid) mode. Production default is
+**free** mode: the same tier keys repointed at OpenRouter free-tier models
+(primary) and NVIDIA NIM (a fallback twin per tier), $0, zero Anthropic
+calls. One switch flips modes — the `TIER_MODE` env var or `tier_mode:` in
+settings.yaml; the model tables and fallback maps live in
+`config/settings.yaml` under `models.<mode>` / `fallbacks.<mode>`. Routing
+logic (T0 grammar, RULES 1-5, the Stage-2 classifier, escalation) is
+mode-agnostic. Two free-mode consequences: the Stage-2 classifier uses
+prompt-enforced JSON plus defensive extraction instead of Anthropic's
+schema-constrained `output_config` (see `jarvis/llm/parsing.py`), and open
+reasoning models' inline `<think>` blocks are stream-filtered before TTS.
+
 ### Stage 1 — local heuristics (free, <1 ms)
 
 Run these rules in order; first match wins:

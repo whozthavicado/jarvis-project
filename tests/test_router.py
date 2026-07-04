@@ -24,8 +24,9 @@ async def test_ambiguous_text_falls_through_to_classifier(monkeypatch):
     router = Router(get_settings())
     seen = []
 
-    async def _fake_classify(text, settings, client=None):
+    async def _fake_classify(text, settings, llm=None):
         seen.append(text)
+        assert llm is router.llm_for("router")  # shares the cached router-tier client
         return "t2_medium"
 
     monkeypatch.setattr("jarvis.routing.router.classifier.classify", _fake_classify)

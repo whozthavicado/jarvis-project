@@ -1,8 +1,32 @@
 # Z.E.R.O
 
 Local-first personal voice assistant for an 8 GB MacBook. All heavy intelligence
-runs through the Claude API; the machine only captures audio, transcribes, routes,
-executes tools, and speaks. Full design in [ARCHITECTURE.md](ARCHITECTURE.md).
+runs through hosted model APIs; the machine only captures audio, transcribes,
+routes, executes tools, and speaks. Full design in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Two modes
+
+Z.E.R.O runs in one of two tier modes, switched by a single setting
+(`TIER_MODE` env var, or `tier_mode:` in `config/settings.yaml`) — the
+routing architecture, tools, memory, and voice pipeline are identical in
+both; only which models answer changes.
+
+| | **Free mode** (default) | **Pro mode** |
+|---|---|---|
+| `TIER_MODE` | `free` (or unset) | `anthropic` |
+| Engines | OpenRouter free tier (primary) + NVIDIA NIM (fallback) | Claude models (Sonnet 5 / Opus 4.8 / Fable 5 / Haiku 4.5), plus OpenRouter free for the simple tier |
+| Cost | **$0** — zero Anthropic calls, ever | Paid Anthropic API usage |
+| Keys needed | `OPENROUTER_API_KEY` + `NVIDIA_API_KEY` | those two + `ANTHROPIC_API_KEY` |
+| Caveats | Free catalogs rotate and rate-limit (~20 req/min, ~200 req/day per model) — that's why every tier has a second-catalog fallback | none beyond cost |
+
+Copy `.env.example` to `.env`, fill in keys, and load it
+(`set -a; source .env; set +a`). In free mode every tier falls back
+OpenRouter → NVIDIA twin → smaller free tier, so worst case Z.E.R.O answers
+with a smaller free model instead of not answering at all. Upgrading later
+is exactly one change: `TIER_MODE=anthropic` plus an `ANTHROPIC_API_KEY` —
+the Anthropic client code stays intact and dormant in free mode, never
+deleted. (A Claude Pro subscription used to *develop* this project in Claude
+Code is completely separate and is never called by the app.)
 
 ## Status
 
@@ -75,19 +99,21 @@ python -m scripts.milestone1               # live: speak, pause, hear it echoed
 
 ### Try Milestone 2
 
-Needs credentials for whichever tier's provider you're using, in addition to
-everything Milestone 1 needs:
-- `t1_standard` (Sonnet 5, default): `ANTHROPIC_API_KEY` set, or an
-  `ant auth login` profile active.
-- `t1_simple` (OpenRouter free): `OPENROUTER_API_KEY` set — get one at
-  [openrouter.ai/keys](https://openrouter.ai/keys).
+Needs credentials for whichever mode you're running (see **Two modes**
+above), in addition to everything Milestone 1 needs.
 
 ```bash
-python -m scripts.milestone2 --check                    # Sonnet 5: do credentials work?
-python -m scripts.milestone2 --check --tier t1_simple    # OpenRouter free: do credentials work?
-python -m scripts.milestone2 --text                      # type a conversation (no mic needed)
-python -m scripts.milestone2 --tier t1_simple            # live, on the free tier
-python -m scripts.milestone2                              # live, on Sonnet 5 (default)
+# Free mode (default): verify each engine independently
+python -m scripts.milestone2 --check                          # t1_standard via OpenRouter free
+python -m scripts.milestone2 --check --tier t1_simple          # OpenRouter free (small model)
+python -m scripts.milestone2 --check --tier t1_standard_nvidia # NVIDIA NIM fallback engine
+python -m scripts.milestone2 --check --tier router             # the free classifier model
+
+python -m scripts.milestone2 --text                            # type a conversation (no mic needed)
+python -m scripts.milestone2                                    # live voice conversation
+
+# Pro mode: same commands with the mode flipped
+TIER_MODE=anthropic python -m scripts.milestone2 --check       # Sonnet 5: do credentials work?
 ```
 
 ## Tests
@@ -101,7 +127,7 @@ pytest
 ## Layout
 
 ```
-config/settings.yaml     tiers (provider + model + fallback), audio/VAD/TTS params, budgets
+config/settings.yaml     tier modes (free/anthropic model tables + fallback maps), audio/VAD/TTS params, budgets
 jarvis/config.py         dotted-access settings loader
 jarvis/audio/             M1: capture, vad, transcriber, pipeline (transcripts())
 jarvis/speech/            M6: sentence-buffered TTS (Speaker)
@@ -116,5 +142,7 @@ scripts/start_whisper_server.sh
 tests/                    mirrors jarvis/
 ```
 
-Next: T0 local command grammar + first tools (M4), then routing across tiers
-(M2). See ARCHITECTURE.md §8.
+Delivered since: T0 command grammar + tools (M4), per-turn tier routing
+(M2), persistent memory (M5), the fallback ladder / circuit breaker /
+budget guard (M3-full), and the free/anthropic tier-mode split. Next:
+hardening (watchdogs, offline mode). See ARCHITECTURE.md §8.
