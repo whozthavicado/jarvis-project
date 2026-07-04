@@ -1,11 +1,21 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme {
+  --color-zero-bgfrom: #05070C;
+  --color-zero-bgto: #0A0E16;
+  --color-zero-accent: #2E9BFF;
+  --color-zero-accentlight: #5AC8FF;
+  --color-zero-surface: #0D1420;
+  --color-zero-border: rgba(255, 255, 255, 0.08);
+  --color-zero-text-primary: #FFFFFF;
+  --color-zero-text-muted: #7C8BA6;
+  --radius-zero: 18px;
+}
 
 @layer base {
   body {
-    background: linear-gradient(180deg, theme('colors.zero.bgFrom'), theme('colors.zero.bgTo'));
-    color: theme('colors.zero.text.primary');
+    background: linear-gradient(180deg, var(--color-zero-bgfrom), var(--color-zero-bgto));
+    color: var(--color-zero-text-primary);
     min-height: 100vh;
   }
 }
