@@ -86,7 +86,7 @@ models:
       max_tokens: 1024
     t1_simple_nvidia:
       provider: nvidia
-      model: "nvidia/nemotron-nano-9b-v2"
+      model: "nvidia/nvidia-nemotron-nano-9b-v2"
       max_tokens: 1024
     t1_standard:
       provider: openrouter
@@ -110,7 +110,7 @@ models:
       max_tokens: 8192
     t3_complex_nvidia:
       provider: nvidia
-      model: "deepseek-ai/deepseek-r1"
+      model: "deepseek-ai/deepseek-v4-pro"
       max_tokens: 8192
     router:
       provider: openrouter
@@ -118,7 +118,7 @@ models:
       max_tokens: 400
     router_nvidia:
       provider: nvidia
-      model: "nvidia/nemotron-nano-9b-v2"
+      model: "nvidia/nvidia-nemotron-nano-9b-v2"
       max_tokens: 400
   anthropic:
     t1_simple:
@@ -127,7 +127,7 @@ models:
       max_tokens: 1024
     t1_simple_nvidia:
       provider: nvidia
-      model: "nvidia/nemotron-nano-9b-v2"
+      model: "nvidia/nvidia-nemotron-nano-9b-v2"
       max_tokens: 1024
     t1_standard:
       provider: anthropic
