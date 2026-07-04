@@ -52,6 +52,7 @@ class Speaker:
         self._worker: Optional[asyncio.Task] = None
         self._current: Optional[asyncio.subprocess.Process] = None
         self._say_cmd = "say"  # overridable in tests
+        self._osascript_cmd = "osascript"  # overridable in tests
 
     # -- lifecycle -------------------------------------------------------
     def start(self) -> None:
@@ -120,12 +121,37 @@ class Speaker:
         if self.voice:
             args += ["-v", str(self.voice)]
         args.append(text)
-        self._current = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
+        failed = False
         try:
-            await self._current.wait()
-        finally:
-            self._current = None
+            self._current = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                await self._current.wait()
+                # A positive exit code is a real `say` failure; a negative one
+                # means we terminated it ourselves (barge-in via interrupt()).
+                failed = (self._current.returncode or 0) > 0
+            finally:
+                self._current = None
+        except OSError:
+            failed = True
+        if failed:
+            await self._notify(text)
+
+    async def _notify(self, text: str) -> None:
+        """§5.4: `say` failure falls back to an on-screen notification."""
+        safe = text.replace('"', "'")
+        script = f'display notification "{safe}" with title "Z.E.R.O"'
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._osascript_cmd,
+                "-e",
+                script,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+        except OSError:
+            pass  # nothing left to surface it with; the text is still in history

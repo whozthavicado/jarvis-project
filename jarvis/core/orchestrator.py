@@ -38,6 +38,15 @@ resolved tier, but with a spoken heads-up first -- there's no voice
 confirmation channel yet, so "requires confirmation" is implemented here as
 "is surfaced audibly", not a yes/no gate. Without a ``budget``, behavior is
 unchanged (unlimited), which is what every pre-M3-full test still exercises.
+
+Hardening adds offline mode (ARCHITECTURE.md §5.1's last rung) via an
+optional ``offline`` ConnectivityMonitor. A T0 grammar match still runs --
+it never leaves the machine -- but an LLM-bound turn while offline
+short-circuits to a spoken "I'm offline" notice instead of paying a connect
+timeout, and (like T0) never touches session history. A turn that dies on a
+transport-level error marks the monitor offline so the *next* turn
+short-circuits immediately; recovery is automatic once the monitor's cache
+TTL expires and a probe succeeds. Without ``offline``, behavior is unchanged.
 """
 from __future__ import annotations
 
@@ -46,6 +55,7 @@ from typing import Callable, Optional
 from jarvis.audio import Transcript, transcripts
 from jarvis.config import Settings, get_settings
 from jarvis.core.budget import BudgetGuard, get_budget_guard
+from jarvis.core.offline import ConnectivityMonitor, get_connectivity_monitor
 from jarvis.core.session import Session
 from jarvis.llm import LLMClient, TurnResult
 from jarvis.memory import get_store
@@ -57,6 +67,15 @@ from jarvis.tools.registry import ConfirmFn
 _HARD_CAP_NOTICE = "Running in reduced mode — today's budget is used up: "
 _SOFT_CAP_NOTICE = "Heads up, we're near today's budget for the heavier models — continuing anyway: "
 _BUDGET_FALLBACK_TIER = "t1_simple"
+_OFFLINE_NOTICE = "I'm offline — I can still control the Mac."
+
+
+def _is_connection_error(exc: Exception) -> bool:
+    """Transport-level failure = evidence we're offline (§5.1's last rung)."""
+    import anthropic
+    import httpx
+
+    return isinstance(exc, (anthropic.APIConnectionError, httpx.TransportError))
 
 
 def _fallback_text_for(exc: Exception) -> str:
@@ -98,6 +117,7 @@ async def handle_turn(
     tool_confirm: Optional[ConfirmFn] = None,
     router: Optional[Router] = None,
     budget: Optional[BudgetGuard] = None,
+    offline: Optional[ConnectivityMonitor] = None,
 ) -> Optional[TurnResult]:
     """Process one user turn against *session*, streaming the reply to on_text.
 
@@ -120,6 +140,10 @@ async def handle_turn(
         result = await execute_tool(t0_call, confirm=tool_confirm)
         on_text(result.content)
         return TurnResult(text=result.content, model="t0", stop_reason="t0_command")
+
+    if offline is not None and not await offline.is_online():
+        on_text(_OFFLINE_NOTICE)
+        return TurnResult(text=_OFFLINE_NOTICE, model="offline", stop_reason="offline")
 
     session.add_user_turn(transcript.text)
 
@@ -149,6 +173,8 @@ async def handle_turn(
     try:
         result = await turn_llm.stream_reply(system_prompt, session.messages, on_text)
     except Exception as exc:  # noqa: BLE001 - deliberately broad; see _fallback_text_for
+        if offline is not None and _is_connection_error(exc):
+            offline.mark_offline()
         on_text(_fallback_text_for(exc))
         return None
 
@@ -188,12 +214,19 @@ async def converse(
     llm = LLMClient(s, tier=tier)
     router = Router(s) if route else None
     budget = get_budget_guard(s)
+    offline = get_connectivity_monitor(s)
 
     try:
         async with Speaker(s) as speaker:
             async for t in transcripts(s):
                 result = await handle_turn(
-                    session, llm, t, speaker.feed, router=router, budget=budget
+                    session,
+                    llm,
+                    t,
+                    speaker.feed,
+                    router=router,
+                    budget=budget,
+                    offline=offline,
                 )
                 await speaker.flush()
                 if on_turn is not None:

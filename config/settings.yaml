@@ -25,6 +25,17 @@ whisper:
     - "thanks for watching!"
     - "subtitles by the amara.org community"
     - "you"
+  # §5.4 watchdog: health-check the server on an interval, restart it when it
+  # stops answering. restart_cmd is repo-relative unless absolute; set it to
+  # null to disable auto-restart (health checks then only log). The restart
+  # cap is per cooldown window, so a server that dies instantly (missing
+  # model, broken binary) is retried max_restarts times, left alone for
+  # cooldown_s, then retried again.
+  watchdog:
+    interval_s: 30
+    restart_cmd: ["scripts/start_whisper_server.sh"]
+    max_restarts: 3
+    cooldown_s: 300
 
 tts:
   voice: null             # null = system default `say` voice
@@ -177,6 +188,16 @@ fallbacks:
 budget:
   soft_daily_usd: 3.0
   hard_daily_usd: 6.0
+
+# Offline mode (§5.1's last rung): a cheap TCP connect probe decides whether
+# LLM-bound turns even get attempted; T0 grammar commands always run. The
+# verdict is cached for cache_ttl_s, and an observed transport failure on an
+# LLM call marks us offline without a probe. See jarvis/core/offline.py.
+offline:
+  probe_host: "1.1.1.1"
+  probe_port: 443
+  probe_timeout_s: 1.5
+  cache_ttl_s: 30
 
 # M5 persistent memory (ARCHITECTURE.md §4). db_path is the SQLite episodic
 # log + FTS5 recall index -- gitignored, local-only, rebuilds itself (schema
