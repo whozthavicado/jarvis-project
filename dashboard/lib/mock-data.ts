@@ -22,10 +22,10 @@ export const mockDashboardData: DashboardData = {
   })),
   predictiveProjectionPercent: 23,
   resourceDistribution: [
-    { id: "compute", label: "Compute", percent: 38, colorClass: "bg-zero-accent" },
-    { id: "storage", label: "Storage", percent: 27, colorClass: "bg-zero-accentLight" },
-    { id: "network", label: "Network", percent: 21, colorClass: "bg-blue-300" },
-    { id: "reserve", label: "Reserve", percent: 14, colorClass: "bg-blue-900" },
+    { id: "compute", label: "Compute", percent: 38 },
+    { id: "storage", label: "Storage", percent: 27 },
+    { id: "network", label: "Network", percent: 21 },
+    { id: "reserve", label: "Reserve", percent: 14 },
   ],
   resourceTotalPercent: 86,
   activeModules: [

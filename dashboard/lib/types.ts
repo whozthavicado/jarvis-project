@@ -19,7 +19,6 @@ export interface ResourceCategory {
   id: string;
   label: string;
   percent: number;
-  colorClass: string; // Tailwind background class, e.g. "bg-zero-accent"
 }
 
 export interface ActiveModule {
