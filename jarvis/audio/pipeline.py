@@ -14,7 +14,7 @@ from jarvis.config import Settings, get_settings
 from jarvis.audio.capture import MicCapture
 from jarvis.audio.transcriber import WhisperClient
 from jarvis.audio.types import Transcript
-from jarvis.audio.vad import segment_stream
+from jarvis.audio.vad import LOW_ENERGY_RMS_THRESHOLD, segment_stream
 from jarvis.audio.watchdog import WhisperWatchdog
 
 
@@ -38,6 +38,7 @@ async def transcripts(
     watchdog = WhisperWatchdog(s)
     async with MicCapture(s) as mic, WhisperClient(s) as whisper, watchdog:
         async for segment in segment_stream(mic.frames(), s):
-            t = await whisper.transcribe(segment)
+            low_energy = segment.mean_rms < LOW_ENERGY_RMS_THRESHOLD
+            t = await whisper.transcribe(segment.pcm, low_energy=low_energy)
             if t.usable or include_rejected:
                 yield t

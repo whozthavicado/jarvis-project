@@ -14,6 +14,9 @@ class Transcript:
         duration_ms: Length of the source audio segment.
         rejected: True if a guard (too short, hallucination, empty) dropped it.
         reason: Human-readable rejection reason when ``rejected`` is True.
+        low_energy: True if the source segment's VAD-derived RMS energy was
+            below LOW_ENERGY_RMS_THRESHOLD (ARCHITECTURE.md §5.4) -- this is
+            what gated whether the hallucination guard applied.
     """
 
     text: str
@@ -21,6 +24,7 @@ class Transcript:
     duration_ms: int = 0
     rejected: bool = False
     reason: str = ""
+    low_energy: bool = False
 
     @property
     def usable(self) -> bool:

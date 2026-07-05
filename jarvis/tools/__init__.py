@@ -10,6 +10,8 @@ from __future__ import annotations
 from jarvis.tools import files as _files  # noqa: F401 - registration side effect
 from jarvis.tools import macos as _macos  # noqa: F401 - registration side effect
 from jarvis.tools import memory_tools as _memory_tools  # noqa: F401 - registration side effect
+from jarvis.tools import shell as _shell  # noqa: F401 - registration side effect
+from jarvis.tools import web as _web  # noqa: F401 - registration side effect
 from jarvis.tools.registry import execute, get_tools, register
 from jarvis.tools.types import ToolCall, ToolDef, ToolResult
 

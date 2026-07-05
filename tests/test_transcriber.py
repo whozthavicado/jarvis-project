@@ -95,3 +95,33 @@ async def test_requires_context_manager():
     w = WhisperClient(get_settings())  # no _client set
     with pytest.raises(RuntimeError):
         await w.transcribe(b"\x00\x00" * 100)
+
+
+@pytest.mark.asyncio
+async def test_high_energy_hallucination_guard_does_not_apply():
+    # A loud, clear "thank you" shouldn't be discarded -- the guard only
+    # applies when the source segment was actually low-energy (§5.4).
+    w = _client_with("thank you")
+    t = await w.transcribe(b"\x00\x00" * 8000, low_energy=False)
+    assert t.usable
+    assert t.text == "thank you"
+    assert not t.rejected
+
+
+@pytest.mark.asyncio
+async def test_default_low_energy_preserves_old_unconditional_behavior():
+    w = _client_with("thank you")
+    t = await w.transcribe(b"\x00\x00" * 8000)  # no low_energy kwarg passed
+    assert t.rejected
+    assert t.reason == "hallucination_or_empty"
+
+
+@pytest.mark.asyncio
+async def test_transcript_low_energy_field_round_trips():
+    w = _client_with("turn on the lights")
+    t = await w.transcribe(b"\x10\x00" * 8000, low_energy=False)
+    assert t.low_energy is False
+
+    w2 = _client_with("turn on the lights")
+    t2 = await w2.transcribe(b"\x10\x00" * 8000, low_energy=True)
+    assert t2.low_energy is True

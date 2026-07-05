@@ -12,6 +12,7 @@ from jarvis.core.budget import BudgetGuard
 from jarvis.core.offline import ConnectivityMonitor
 from jarvis.core.orchestrator import _fallback_text_for, handle_turn
 from jarvis.core.session import Session
+from jarvis.llm.prompts import build_system_prompt
 from jarvis.llm.providers import OpenRouterError
 from jarvis.llm.types import ChatMessage, TurnResult
 from jarvis.routing.router import Router
@@ -246,7 +247,8 @@ async def test_soft_cap_prefixes_a_notice_but_still_uses_resolved_tier():
 
     assert result.text == "Complex reply."
     assert seen[0].startswith("Heads up")
-    assert seen[1:] == ["Complex reply."]
+    # t2_medium also gets the T2/T3 unconditional up-front ack (§5.4)
+    assert seen[1:] == ["On it.", "Complex reply."]
     assert len(t2_llm.calls) == 1
 
 
@@ -495,3 +497,209 @@ async def test_offline_never_starts_a_filler_task(monkeypatch):
 
     await asyncio.sleep(0.05)
     assert spoken == []
+
+
+def _escalate_result(text="<ESCALATE> this needs a stronger model.") -> TurnResult:
+    return TurnResult(text=text, model="claude-haiku-4-5", stop_reason="end_turn")
+
+
+@pytest.mark.asyncio
+async def test_escalation_retries_one_tier_up():
+    session = Session(tier="t1_standard")
+    t1_llm = _StubLLM(result=_escalate_result())
+    t1_5_llm = _StubLLM(result=_ok_result("Handled at the next tier."))
+    router = _MultiTierStubRouter(
+        resolved_tier="t1_simple", llms={"t1_simple": t1_llm, "t1_standard": t1_5_llm}
+    )
+    seen = []
+
+    result = await handle_turn(
+        session, t1_llm, Transcript(text="hello"), seen.append, router=router
+    )
+
+    assert result.text == "Handled at the next tier."
+    assert len(t1_llm.calls) == 1
+    assert len(t1_5_llm.calls) == 1
+    assert any(s.startswith("Let me think about this differently") for s in seen)
+
+
+@pytest.mark.asyncio
+async def test_escalation_capped_at_one_hop_even_if_retry_also_escalates():
+    session = Session(tier="t1_standard")
+    t1_llm = _StubLLM(result=_escalate_result())
+    t1_5_llm = _StubLLM(result=_escalate_result("<ESCALATE> still too hard."))
+    router = _MultiTierStubRouter(
+        resolved_tier="t1_simple", llms={"t1_simple": t1_llm, "t1_standard": t1_5_llm}
+    )
+    seen = []
+
+    result = await handle_turn(
+        session, t1_llm, Transcript(text="hello"), seen.append, router=router
+    )
+
+    assert result.text == "<ESCALATE> still too hard."
+    assert len(t1_llm.calls) == 1
+    assert len(t1_5_llm.calls) == 1  # never retried a second time
+
+
+@pytest.mark.asyncio
+async def test_escalation_without_router_is_a_no_op():
+    session = Session(tier="t1_standard")
+    llm = _StubLLM(result=_escalate_result())
+
+    result = await handle_turn(session, llm, Transcript(text="hello"), lambda _: None)
+
+    assert result.text.startswith("<ESCALATE>")
+    assert len(llm.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_escalation_into_t3_requires_confirmation_to_proceed():
+    session = Session(tier="t1_standard")
+    t2_llm = _StubLLM(result=_escalate_result())
+    t3_llm = _StubLLM(result=_ok_result("Full power engaged."))
+    router = _MultiTierStubRouter(
+        resolved_tier="t2_medium", llms={"t2_medium": t2_llm, "t3_complex": t3_llm}
+    )
+    seen = []
+
+    result = await handle_turn(
+        session,
+        t2_llm,
+        Transcript(text="plan this out"),
+        seen.append,
+        router=router,
+        escalation_confirm=lambda tier: True,
+    )
+
+    assert result.text == "Full power engaged."
+    assert len(t3_llm.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_escalation_into_t3_declines_by_default_with_no_callback():
+    session = Session(tier="t1_standard")
+    t2_llm = _StubLLM(result=_escalate_result())
+    t3_llm = _StubLLM(result=_ok_result("should not be reached"))
+    router = _MultiTierStubRouter(
+        resolved_tier="t2_medium", llms={"t2_medium": t2_llm, "t3_complex": t3_llm}
+    )
+    seen = []
+
+    result = await handle_turn(
+        session, t2_llm, Transcript(text="plan this out"), seen.append, router=router
+    )
+
+    assert result.text.startswith("<ESCALATE>")
+    assert t3_llm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_escalation_into_t3_declines_when_callback_says_no():
+    session = Session(tier="t1_standard")
+    t2_llm = _StubLLM(result=_escalate_result())
+    t3_llm = _StubLLM(result=_ok_result("should not be reached"))
+    router = _MultiTierStubRouter(
+        resolved_tier="t2_medium", llms={"t2_medium": t2_llm, "t3_complex": t3_llm}
+    )
+
+    result = await handle_turn(
+        session,
+        t2_llm,
+        Transcript(text="plan this out"),
+        lambda _: None,
+        router=router,
+        escalation_confirm=lambda tier: False,
+    )
+
+    assert result.text.startswith("<ESCALATE>")
+    assert t3_llm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_sub_t3_escalation_hops_need_no_confirmation():
+    session = Session(tier="t1_standard")
+    t1_llm = _StubLLM(result=_escalate_result())
+    t1_5_llm = _StubLLM(result=_ok_result("Handled."))
+    router = _MultiTierStubRouter(
+        resolved_tier="t1_simple", llms={"t1_simple": t1_llm, "t1_standard": t1_5_llm}
+    )
+
+    def _never_call(tier):
+        raise AssertionError("escalation_confirm should not be invoked for a sub-T3 hop")
+
+    result = await handle_turn(
+        session,
+        t1_llm,
+        Transcript(text="hello"),
+        lambda _: None,
+        router=router,
+        escalation_confirm=_never_call,
+    )
+
+    assert result.text == "Handled."
+
+
+@pytest.mark.asyncio
+async def test_async_escalation_confirm_is_awaited():
+    session = Session(tier="t1_standard")
+    t2_llm = _StubLLM(result=_escalate_result())
+    t3_llm = _StubLLM(result=_ok_result("Full power engaged."))
+    router = _MultiTierStubRouter(
+        resolved_tier="t2_medium", llms={"t2_medium": t2_llm, "t3_complex": t3_llm}
+    )
+
+    async def approve(tier: str) -> bool:
+        return True
+
+    result = await handle_turn(
+        session,
+        t2_llm,
+        Transcript(text="plan this out"),
+        lambda _: None,
+        router=router,
+        escalation_confirm=approve,
+    )
+
+    assert result.text == "Full power engaged."
+
+
+def test_layer_a_carries_the_escalation_token():
+    assert "<ESCALATE>" in build_system_prompt("t1_simple")
+
+
+@pytest.mark.asyncio
+async def test_t2_and_t3_speak_immediate_ack_and_skip_the_delayed_filler(monkeypatch):
+    import jarvis.core.orchestrator as orchestrator_mod
+
+    monkeypatch.setattr(orchestrator_mod, "_FILLER_DELAY_S", 0.01)
+    session = Session(tier="t1_standard")
+    llm = _SlowStubLLM(_ok_result("the real reply"), delay_s=0.05)
+    router = _MultiTierStubRouter(resolved_tier="t2_medium", llms={"t2_medium": llm})
+    seen = []
+    spoken = []
+
+    result = await handle_turn(
+        session,
+        llm,
+        Transcript(text="plan this out"),
+        seen.append,
+        router=router,
+        speak_filler=spoken.append,
+    )
+
+    assert result.text == "the real reply"
+    assert seen[0] == "On it."  # immediate ack, spoken via on_text
+    assert spoken == []  # delayed filler (via speak_filler) never separately fires
+
+
+@pytest.mark.asyncio
+async def test_t1_tiers_unaffected_by_immediate_ack():
+    session = Session(tier="t1_standard")
+    llm = _StubLLM(result=_ok_result("fast reply"))
+    seen = []
+
+    result = await handle_turn(session, llm, Transcript(text="hello"), seen.append)
+
+    assert result.text == "fast reply"
+    assert seen == ["fast reply"]

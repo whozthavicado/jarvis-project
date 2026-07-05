@@ -18,6 +18,14 @@ plain-text system prompt:
                                  "t1_simple", "t1_standard"). Safe to evolve
                                  as capabilities (tools, routing) come online.
 
+Layer A also carries the mid-task escalation contract (ARCHITECTURE.md §2):
+a model replies with the literal ``<ESCALATE>`` token (plus a one-sentence
+reason) when a task is beyond it. It lives in Layer A, not per-tier Layer B,
+because the instruction is identical for every tier -- ARCHITECTURE.md's own
+wording is "every tier's system prompt includes" the same sentence, so one
+copy here avoids four Layer-B files drifting out of sync. See
+jarvis/core/orchestrator.py's handle_turn for the retry logic that catches it.
+
 Layer C (dynamic context — datetime, memory digest, recall) is intentionally
 *not* handled here: it changes every turn and belongs in the conversation
 messages, not the system prompt, so editing it never invalidates the Layer

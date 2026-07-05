@@ -53,6 +53,23 @@ tts:
   rate: 190               # words per minute
   max_inflight: 1         # sentences spoken concurrently (1 = strictly sequential)
 
+tools:
+  shell:
+    # jarvis/tools/shell.py's run_command (ARCHITECTURE.md §5.3): binaries
+    # the model may invoke via a shell command. Anything else is rejected
+    # before a subprocess is even spawned -- this is the tool's entire
+    # security boundary, so keep this list short and intentional.
+    allowlist:
+      - ls
+      - cat
+      - pwd
+      - echo
+      - grep
+      - find
+      - git
+      - python3
+      - pip3
+
 # Which model table + fallback map below is live: "free" (OpenRouter free
 # tier + NVIDIA NIM, $0 -- the production default) or "anthropic" (Claude
 # models, paid -- the future upgrade path). The TIER_MODE env var overrides

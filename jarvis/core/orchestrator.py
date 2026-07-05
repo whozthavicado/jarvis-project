@@ -52,6 +52,18 @@ timeout, and (like T0) never touches session history. A turn that dies on a
 transport-level error marks the monitor offline so the *next* turn
 short-circuits immediately; recovery is automatic once the monitor's cache
 TTL expires and a probe succeeds. Without ``offline``, behavior is unchanged.
+
+Mid-task escalation (ARCHITECTURE.md §2) adds an optional
+``escalation_confirm``: Layer A instructs every tier to reply with the
+literal ``<ESCALATE>`` token when a task is beyond it, and ``handle_turn``
+retries such a reply exactly once on the next tier up -- only possible with
+a router (same "no other tier's LLMClient to retry on" limitation as the
+budget reroutes above). Escalating specifically into t3_complex needs
+``escalation_confirm`` to approve it; every other hop is unconditional.
+
+T2/T3 turns also get an unconditional up-front "On it." (ARCHITECTURE.md
+§5.4) instead of waiting on the 1.5s delayed-filler timer -- the two are
+mutually exclusive per turn so the ack is never spoken twice.
 """
 from __future__ import annotations
 
@@ -61,7 +73,7 @@ from typing import Awaitable, Callable, Optional, Union
 
 from jarvis.audio import Transcript, transcripts
 from jarvis.config import Settings, get_settings
-from jarvis.core.budget import BudgetGuard, get_budget_guard
+from jarvis.core.budget import BudgetGuard, CONFIRM_TIERS, get_budget_guard
 from jarvis.core.offline import ConnectivityMonitor, get_connectivity_monitor
 from jarvis.core.session import Session
 from jarvis.llm import LLMClient, TurnResult
@@ -78,8 +90,13 @@ _BUDGET_FALLBACK_TIER = "t1_simple"
 _OFFLINE_NOTICE = "I'm offline — I can still control the Mac."
 _FILLER_TEXT = "On it."
 _FILLER_DELAY_S = 1.5
+_ESCALATION_LADDER = ("t1_simple", "t1_standard", "t2_medium", "t3_complex")
+_T3_CONFIRM_FROM = "t2_medium"
+_ESCALATION_TOKEN = "<ESCALATE>"
+_ESCALATION_NOTICE = "Let me think about this differently — bringing in a stronger model: "
 
 BudgetConfirmFn = Callable[[str], Union[bool, Awaitable[bool]]]
+EscalationConfirmFn = Callable[[str], Union[bool, Awaitable[bool]]]
 
 
 async def _resolve_budget_confirm(confirm: Optional[BudgetConfirmFn], tier: str) -> bool:
@@ -91,6 +108,32 @@ async def _resolve_budget_confirm(confirm: Optional[BudgetConfirmFn], tier: str)
     """
     if confirm is None:
         return True
+    outcome = confirm(tier)
+    if asyncio.iscoroutine(outcome):
+        outcome = await outcome
+    return bool(outcome)
+
+
+def _next_tier_up(tier: str) -> Optional[str]:
+    """The next rung on the escalation ladder, or None at the top/off-ladder."""
+    if tier not in _ESCALATION_LADDER:
+        return None
+    idx = _ESCALATION_LADDER.index(tier)
+    if idx + 1 >= len(_ESCALATION_LADDER):
+        return None
+    return _ESCALATION_LADDER[idx + 1]
+
+
+async def _resolve_escalation_confirm(confirm: Optional[EscalationConfirmFn], tier: str) -> bool:
+    """Ask *confirm* whether to escalate into *tier* (only ever t3_complex).
+
+    Defaults to decline -- unlike the budget gate's fail-open default, an
+    unconfirmed tier upgrade has real cost implications and there's no
+    prior "this was already happening" behavior to preserve, so this
+    mirrors the destructive-tool gate's fail-closed philosophy instead.
+    """
+    if confirm is None:
+        return False
     outcome = confirm(tier)
     if asyncio.iscoroutine(outcome):
         outcome = await outcome
@@ -160,6 +203,7 @@ async def handle_turn(
     offline: Optional[ConnectivityMonitor] = None,
     budget_confirm: Optional[BudgetConfirmFn] = None,
     speak_filler: Optional[Callable[[str], None]] = None,
+    escalation_confirm: Optional[EscalationConfirmFn] = None,
 ) -> Optional[TurnResult]:
     """Process one user turn against *session*, streaming the reply to on_text.
 
@@ -185,7 +229,24 @@ async def handle_turn(
 
     ``speak_filler``, when supplied, speaks "On it." if the LLM call's first
     token hasn't arrived within 1.5s -- scoped to the LLM path only; T0 and
-    offline turns are synchronous and never start a filler task.
+    offline turns are synchronous and never start a filler task. T2/T3 turns
+    (ARCHITECTURE.md §5.4: "always acknowledge up front") get an unconditional
+    immediate "On it." instead, replacing the delayed filler for that turn
+    rather than risking speaking it twice.
+
+    Mid-task escalation (ARCHITECTURE.md §2): if a reply is the literal
+    ``<ESCALATE>`` token (Layer A instructs every tier to reply with exactly
+    that, plus a reason, when a task is beyond it), the turn is retried
+    exactly once on the next tier up the ladder -- this only works with a
+    router (same limitation as the budget-cap rerouting above; without one
+    there's no other tier's LLMClient to retry on, so the escalation is a
+    no-op and the literal token is returned as the turn's text). Escalating
+    specifically from t2_medium into t3_complex requires ``escalation_confirm``
+    to approve it (defaults to decline with no callback, since an unconfirmed
+    tier upgrade has real cost -- see ``_resolve_escalation_confirm``); every
+    other hop needs no confirmation. Capped at one hop per turn by
+    construction: the retried result is never checked for a second
+    ``<ESCALATE>``.
     """
     t0_call = match_t0(transcript.text)
     if t0_call is not None:
@@ -229,30 +290,59 @@ async def handle_turn(
     if notice:
         on_text(notice)
 
-    first_token = asyncio.Event()
+    immediate_ack = tier in CONFIRM_TIERS
+    if immediate_ack:
+        on_text(_FILLER_TEXT)
 
-    def tracked_on_text(chunk: str) -> None:
-        if not first_token.is_set():
+    async def _stream_once(t_llm: LLMClient, t_prompt: str) -> TurnResult:
+        first_token = asyncio.Event()
+
+        def tracked_on_text(chunk: str) -> None:
+            if not first_token.is_set():
+                first_token.set()
+            on_text(chunk)
+
+        filler_task = (
+            asyncio.ensure_future(_speak_filler_if_slow(first_token, speak_filler))
+            if speak_filler is not None and not immediate_ack
+            else None
+        )
+        try:
+            return await t_llm.stream_reply(t_prompt, session.messages, tracked_on_text)
+        finally:
             first_token.set()
-        on_text(chunk)
+            if filler_task is not None:
+                with contextlib.suppress(Exception):
+                    await filler_task
 
-    filler_task = (
-        asyncio.ensure_future(_speak_filler_if_slow(first_token, speak_filler))
-        if speak_filler is not None
-        else None
-    )
-    try:
-        result = await turn_llm.stream_reply(system_prompt, session.messages, tracked_on_text)
-    except Exception as exc:  # noqa: BLE001 - deliberately broad; see _fallback_text_for
-        if offline is not None and _is_connection_error(exc):
-            offline.mark_offline()
-        on_text(_fallback_text_for(exc))
+    async def _run_stream(t_llm: LLMClient, t_prompt: str) -> Optional[TurnResult]:
+        try:
+            return await _stream_once(t_llm, t_prompt)
+        except Exception as exc:  # noqa: BLE001 - deliberately broad; see _fallback_text_for
+            if offline is not None and _is_connection_error(exc):
+                offline.mark_offline()
+            on_text(_fallback_text_for(exc))
+            return None
+
+    result = await _run_stream(turn_llm, system_prompt)
+    if result is None:
         return None
-    finally:
-        first_token.set()
-        if filler_task is not None:
-            with contextlib.suppress(Exception):
-                await filler_task
+
+    if result.text.strip().startswith(_ESCALATION_TOKEN):
+        next_tier = _next_tier_up(tier)
+        if router is not None and next_tier is not None:
+            proceed = True
+            if tier == _T3_CONFIRM_FROM:
+                proceed = await _resolve_escalation_confirm(escalation_confirm, next_tier)
+            if proceed:
+                tier = next_tier
+                turn_llm = router.llm_for(tier)
+                system_prompt = router.system_prompt_for(tier)
+                on_text(_ESCALATION_NOTICE)
+                retried = await _run_stream(turn_llm, system_prompt)
+                if retried is None:
+                    return None
+                result = retried
 
     if result.refused or not result.text:
         on_text("I'd rather not answer that.")

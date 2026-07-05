@@ -70,7 +70,17 @@ class WhisperClient:
         n_samples = len(pcm) // (2 * self.channels)
         return int(n_samples / self.sample_rate * 1000)
 
-    def _is_hallucination(self, text: str) -> bool:
+    def _is_hallucination(self, text: str, *, low_energy: bool = True) -> bool:
+        """The guard only applies when *low_energy* is True (ARCHITECTURE.md
+        §5.4: "...when VAD energy was low") -- a transcript from clearly
+        loud, high-energy audio isn't second-guessed against the
+        empty/punct/tag/blocklist checks. Defaults to True so any caller
+        that doesn't pass an energy signal keeps the old, unconditional
+        guard behavior unchanged; ``transcribe`` is the one real call site
+        updated to pass the pipeline's actual computed signal.
+        """
+        if not low_energy:
+            return False
         t = text.strip().lower()
         if not t:
             return True
@@ -92,8 +102,13 @@ class WhisperClient:
             if self._client is None:
                 await client.aclose()
 
-    async def transcribe(self, pcm: bytes) -> Transcript:
-        """Transcribe one PCM segment. Returns a (possibly rejected) Transcript."""
+    async def transcribe(self, pcm: bytes, *, low_energy: bool = True) -> Transcript:
+        """Transcribe one PCM segment. Returns a (possibly rejected) Transcript.
+
+        ``low_energy`` (keyword-only, defaults True) is the pipeline's
+        VAD-derived signal for whether this segment was quiet enough that
+        the hallucination guard should apply -- see ``_is_hallucination``.
+        """
         if self._client is None:
             raise RuntimeError("WhisperClient must be used as an async context manager")
 
@@ -112,11 +127,12 @@ class WhisperClient:
         payload = resp.json()
         text = clean_text(payload.get("text", ""))
 
-        if self._is_hallucination(text):
+        if self._is_hallucination(text, low_energy=low_energy):
             return Transcript(
                 text="",
                 duration_ms=duration,
                 rejected=True,
                 reason="hallucination_or_empty",
+                low_energy=low_energy,
             )
-        return Transcript(text=text, duration_ms=duration)
+        return Transcript(text=text, duration_ms=duration, low_energy=low_energy)

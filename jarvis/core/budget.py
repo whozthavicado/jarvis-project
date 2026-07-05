@@ -30,7 +30,9 @@ _PRICES_PER_MTOK: Dict[str, Tuple[float, float]] = {
 _CACHE_READ_MULTIPLIER = 0.1  # ~90% discount on cache hits
 _CACHE_WRITE_MULTIPLIER = 1.25  # ~25% premium to write the cache
 
-_CONFIRM_TIERS = ("t2_medium", "t3_complex")  # "T2+" per ARCHITECTURE.md §5.5
+CONFIRM_TIERS = ("t2_medium", "t3_complex")  # "T2+" per ARCHITECTURE.md §5.5 --
+# also reused by orchestrator.py's T2/T3 up-front-ack rule (§5.4), since both
+# mean "the heavy tiers."
 
 
 def _cost_usd(result: TurnResult) -> float:
@@ -82,7 +84,7 @@ class BudgetGuard:
 
     def needs_confirmation(self, tier: str) -> bool:
         """"T2+ requests require spoken confirmation" once the soft cap is hit."""
-        return tier in _CONFIRM_TIERS and self.spent_usd >= self.soft_daily_usd
+        return tier in CONFIRM_TIERS and self.spent_usd >= self.soft_daily_usd
 
 
 _guard: Optional[BudgetGuard] = None

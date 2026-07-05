@@ -13,9 +13,17 @@ from __future__ import annotations
 
 import math
 from collections import deque
+from dataclasses import dataclass
 from typing import AsyncIterator, Callable, Deque, List, Optional
 
 from jarvis.config import Settings, get_settings
+
+# The one empirical "loud enough to count as speech, not noise/silence" cutoff
+# in this codebase. Reused both as _energy_speech's per-frame fallback gate
+# and as VadSegmenter's segment-level "low energy" cutoff for the
+# hallucination guard (ARCHITECTURE.md §5.4) -- deliberately the same number
+# rather than a second, independent threshold that could drift from it.
+LOW_ENERGY_RMS_THRESHOLD = 500.0
 
 
 def _make_speech_detector(sample_rate: int, aggressiveness: int) -> Callable[[bytes], bool]:
@@ -40,28 +48,44 @@ def _make_speech_detector(sample_rate: int, aggressiveness: int) -> Callable[[by
         return _energy_speech
 
 
-def _energy_speech(frame: bytes, threshold: float = 500.0) -> bool:
-    """RMS-energy fallback over int16 PCM (no numpy dependency)."""
+def _frame_rms(frame: bytes) -> float:
+    """RMS over int16 PCM bytes (no numpy dependency). Works on any even-length
+    chunk, not just a single fixed-size frame -- also used to compute a whole
+    segment's mean energy in one pass."""
     if not frame:
-        return False
+        return 0.0
     n = len(frame) // 2
     if n == 0:
-        return False
+        return 0.0
     total = 0
     for i in range(0, n * 2, 2):
         sample = int.from_bytes(frame[i : i + 2], "little", signed=True)
         total += sample * sample
-    rms = math.sqrt(total / n)
-    return rms >= threshold
+    return math.sqrt(total / n)
+
+
+def _energy_speech(frame: bytes, threshold: float = LOW_ENERGY_RMS_THRESHOLD) -> bool:
+    """RMS-energy fallback speech detector."""
+    if not frame:
+        return False
+    return _frame_rms(frame) >= threshold
+
+
+@dataclass(frozen=True)
+class VoicedSegment:
+    """A completed utterance segment plus its mean RMS energy."""
+
+    pcm: bytes
+    mean_rms: float
 
 
 class VadSegmenter:
     """Pure state machine: feed frames, get back completed segments.
 
-    Call :meth:`push` for each frame. It returns a ``bytes`` segment when an
-    utterance completes (trailing silence reached or max length hit), else
-    ``None``. Segments shorter than ``min_segment_ms`` are dropped (returns
-    ``None`` and resets).
+    Call :meth:`push` for each frame. It returns a :class:`VoicedSegment`
+    when an utterance completes (trailing silence reached or max length
+    hit), else ``None``. Segments shorter than ``min_segment_ms`` are
+    dropped (returns ``None`` and resets).
     """
 
     def __init__(
@@ -88,7 +112,7 @@ class VadSegmenter:
         self._trailing_silence = 0
         self._recent_voiced = deque(maxlen=self.start_frames)
 
-    def push(self, frame: bytes) -> Optional[bytes]:
+    def push(self, frame: bytes) -> Optional[VoicedSegment]:
         speech = self._is_speech(frame)
 
         if not self._triggered:
@@ -113,13 +137,13 @@ class VadSegmenter:
             return self._finish()
         return None
 
-    def _finish(self) -> Optional[bytes]:
+    def _finish(self) -> Optional[VoicedSegment]:
         segment = b"".join(self._voiced)
         length = len(self._voiced)
         self._reset()
         if length < self.min_frames:
             return None
-        return segment
+        return VoicedSegment(pcm=segment, mean_rms=_frame_rms(segment))
 
     def _reset(self) -> None:
         self._voiced = []
@@ -128,7 +152,7 @@ class VadSegmenter:
         self._preroll.clear()
         self._recent_voiced.clear()
 
-    def flush(self) -> Optional[bytes]:
+    def flush(self) -> Optional[VoicedSegment]:
         """Force-close any in-progress segment (e.g. on shutdown)."""
         if self._triggered:
             return self._finish()
@@ -137,7 +161,7 @@ class VadSegmenter:
 
 async def segment_stream(
     frames: AsyncIterator[bytes], settings: Optional[Settings] = None
-) -> AsyncIterator[bytes]:
+) -> AsyncIterator[VoicedSegment]:
     """Async wrapper: consume a frame stream, yield utterance segments."""
     seg = VadSegmenter(settings)
     async for frame in frames:
