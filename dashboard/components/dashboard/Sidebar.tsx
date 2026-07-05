@@ -1,21 +1,28 @@
+"use client";
+
 import {
   LayoutDashboard, Cpu, BarChart3, FolderKanban, MessageSquare,
   Workflow, Database, ShieldCheck, Settings,
 } from "lucide-react";
+import { useNavigation, SectionKey } from "@/hooks/useNavigation";
+import { useSettings } from "@/hooks/useSettings";
 
-const NAV_ITEMS = [
-  { label: "Dashboard", icon: LayoutDashboard, active: true },
-  { label: "System", icon: Cpu, active: false },
-  { label: "Analysis", icon: BarChart3, active: false },
-  { label: "Projects", icon: FolderKanban, active: false },
-  { label: "Communications", icon: MessageSquare, active: false },
-  { label: "Automation", icon: Workflow, active: false },
-  { label: "Resources", icon: Database, active: false },
-  { label: "Security", icon: ShieldCheck, active: false },
-  { label: "Configuration", icon: Settings, active: false },
+const NAV_ITEMS: { label: string; icon: typeof LayoutDashboard; section?: SectionKey }[] = [
+  { label: "Dashboard", icon: LayoutDashboard, section: "dashboard" },
+  { label: "System", icon: Cpu, section: "system" },
+  { label: "Analysis", icon: BarChart3, section: "analysis" },
+  { label: "Projects", icon: FolderKanban, section: "projects" },
+  { label: "Communications", icon: MessageSquare, section: "communications" },
+  { label: "Automation", icon: Workflow, section: "automation" },
+  { label: "Resources", icon: Database, section: "resources" },
+  { label: "Security", icon: ShieldCheck, section: "security" },
+  { label: "Configuration", icon: Settings }, // no page section -- opens Settings instead
 ];
 
 export function Sidebar() {
+  const { activeSection, goTo } = useNavigation();
+  const { open: openSettings } = useSettings();
+
   return (
     <aside className="hidden lg:flex w-[260px] shrink-0 flex-col justify-between border-r border-zero-border bg-zero-surface/40 p-6">
       <div>
@@ -39,19 +46,23 @@ export function Sidebar() {
         </div>
 
         <nav className="flex flex-col gap-1">
-          {NAV_ITEMS.map(({ label, icon: Icon, active }) => (
-            <div
-              key={label}
-              className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm ${
-                active
-                  ? "bg-zero-accent/15 text-zero-accent"
-                  : "text-zero-text-muted hover:text-white"
-              }`}
-            >
-              <Icon size={16} />
-              <span>{label}</span>
-            </div>
-          ))}
+          {NAV_ITEMS.map(({ label, icon: Icon, section }) => {
+            const active = section != null && section === activeSection;
+            return (
+              <button
+                key={label}
+                onClick={() => (section ? goTo(section) : openSettings())}
+                className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-left ${
+                  active
+                    ? "bg-zero-accent/15 text-zero-accent"
+                    : "text-zero-text-muted hover:text-white"
+                }`}
+              >
+                <Icon size={16} />
+                <span>{label}</span>
+              </button>
+            );
+          })}
         </nav>
       </div>
 

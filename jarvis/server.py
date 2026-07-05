@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import websockets
@@ -106,6 +107,25 @@ async def handle_client(
             elif msg_type == "history":
                 await websocket.send(
                     json.dumps({"type": "history", "entries": _recent_history(session)})
+                )
+            elif msg_type == "remember":
+                text = str(message.get("text", "")).strip()
+                if not text:
+                    continue
+                kind = str(message.get("kind") or "note")
+                store = get_store()
+                added, _memory_id = store.add_memory(kind=kind, text=text)
+                if added:
+                    broadcaster.publish(
+                        {
+                            "type": "activity",
+                            "actor": "User",
+                            "description": f"Saved note: {text}",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
+                await websocket.send(
+                    json.dumps({"type": "remember_ack", "added": added, "text": text})
                 )
             else:
                 logger.warning("dropped unrecognized WS message type: %r", msg_type)

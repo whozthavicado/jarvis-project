@@ -135,6 +135,79 @@ async def test_malformed_message_is_ignored_and_connection_continues(monkeypatch
     assert json.loads(ws.sent[-1]) == {"type": "reply", "text": "ok"}
 
 
+async def test_remember_message_persists_and_acks(monkeypatch, tmp_path):
+    from jarvis.memory.store import MemoryStore
+
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    monkeypatch.setattr(server_mod, "get_store", lambda: store)
+
+    ws = _FakeWebSocket()
+    ws.push(json.dumps({"type": "remember", "text": "call the dentist"}))
+    ws.close()
+
+    await server_mod.handle_client(ws, Session(tier="t1_standard"), object(), Broadcaster())
+
+    acks = [json.loads(m) for m in ws.sent if json.loads(m).get("type") == "remember_ack"]
+    assert acks == [{"added": True, "text": "call the dentist", "type": "remember_ack"}]
+    # add_memory dedupes on exact (kind, text) -- a repeat insert reports
+    # added=False only if the first one actually persisted.
+    added_again, _ = store.add_memory(kind="note", text="call the dentist")
+    assert added_again is False
+
+
+async def test_remember_broadcasts_an_activity_entry(monkeypatch, tmp_path):
+    from jarvis.memory.store import MemoryStore
+
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    monkeypatch.setattr(server_mod, "get_store", lambda: store)
+
+    ws = _FakeWebSocket()
+    broadcaster = Broadcaster()
+    queue = broadcaster.subscribe()
+    ws.push(json.dumps({"type": "remember", "text": "buy milk"}))
+    ws.close()
+
+    await server_mod.handle_client(ws, Session(tier="t1_standard"), object(), broadcaster)
+
+    event = queue.get_nowait()
+    assert event["type"] == "activity"
+    assert "buy milk" in event["description"]
+
+
+async def test_remember_duplicate_is_not_rebroadcast(monkeypatch, tmp_path):
+    from jarvis.memory.store import MemoryStore
+
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    store.add_memory(kind="note", text="already there")
+    monkeypatch.setattr(server_mod, "get_store", lambda: store)
+
+    ws = _FakeWebSocket()
+    broadcaster = Broadcaster()
+    queue = broadcaster.subscribe()
+    ws.push(json.dumps({"type": "remember", "text": "already there"}))
+    ws.close()
+
+    await server_mod.handle_client(ws, Session(tier="t1_standard"), object(), broadcaster)
+
+    assert json.loads(ws.sent[-1])["added"] is False
+    assert queue.qsize() == 0
+
+
+async def test_remember_with_empty_text_is_ignored(monkeypatch, tmp_path):
+    from jarvis.memory.store import MemoryStore
+
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+    monkeypatch.setattr(server_mod, "get_store", lambda: store)
+
+    ws = _FakeWebSocket()
+    ws.push(json.dumps({"type": "remember", "text": "   "}))
+    ws.close()
+
+    await server_mod.handle_client(ws, Session(tier="t1_standard"), object(), Broadcaster())
+
+    assert ws.sent == []
+
+
 async def test_unrecognized_message_type_is_ignored():
     ws = _FakeWebSocket()
     ws.push(json.dumps({"type": "unknown"}))
