@@ -6,6 +6,17 @@ audio:
   channels: 1
   frame_ms: 30            # webrtcvad accepts only 10 / 20 / 30 ms frames
   device: null            # null = system default input device
+  # If the primary device above produces no real signal at startup (common
+  # with Bluetooth headsets stuck in A2DP/output-only mode -- macOS doesn't
+  # always force a headset into HFP mic mode just because an app opened an
+  # input stream), MicCapture probes each of these, in order, and uses the
+  # first one with real signal. This machine's system-default input
+  # (AirPods) tested silent; the built-in mic (device index 3) tested loud
+  # and clear -- so it's listed here as the fallback. This is a one-time
+  # startup probe, not continuous monitoring.
+  device_fallback: [3]
+  device_probe_ms: 300
+  device_probe_rms_threshold: 50.0
 
 vad:
   aggressiveness: 2       # webrtcvad 0..3 (higher = more aggressive filtering)
@@ -95,6 +106,13 @@ tier_mode: free
 # - The *_nvidia tiers are pure fallback targets, never router-resolved, so
 #   they need no Layer B prompt file: LLMClient reuses the system prompt
 #   resolved for the chain's starting tier across every hop.
+# - t1_simple is the one exception to the "openrouter primary, nvidia
+#   fallback" pattern above: google/gemma-4-31b-it:free was found live
+#   (2026-07-04) to be persistently rate-limited on OpenRouter's shared free
+#   pool, so every t1_simple turn was paying for a failed attempt before
+#   falling over to NVIDIA. Swapped so NVIDIA is primary here and the
+#   (renamed) t1_simple_openrouter is the fallback instead -- same two free
+#   hops, just reordered for the one tier that was actually the bottleneck.
 # - Reasoning models here (deepseek-r1, nemotron reasoning variants) inline
 #   <think> blocks in their output; the OpenRouter/NVIDIA providers filter
 #   those before TTS ever sees them (jarvis/llm/parsing.py).
@@ -109,12 +127,12 @@ tier_mode: free
 models:
   free:
     t1_simple:
-      provider: openrouter
-      model: "google/gemma-4-31b-it:free"
-      max_tokens: 1024
-    t1_simple_nvidia:
       provider: nvidia
       model: "nvidia/nvidia-nemotron-nano-9b-v2"
+      max_tokens: 1024
+    t1_simple_openrouter:
+      provider: openrouter
+      model: "google/gemma-4-31b-it:free"
       max_tokens: 1024
     t1_standard:
       provider: openrouter
@@ -198,8 +216,8 @@ models:
 #   §5.1 (Fable -> Opus -> Sonnet).
 fallbacks:
   free:
-    t1_simple: t1_simple_nvidia
-    t1_simple_nvidia: t1_standard
+    t1_simple: t1_simple_openrouter
+    t1_simple_openrouter: t1_standard
     t1_standard: t1_standard_nvidia
     t1_standard_nvidia: t1_simple
     t2_medium: t2_medium_nvidia

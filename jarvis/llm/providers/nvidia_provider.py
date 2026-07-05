@@ -4,15 +4,17 @@ NVIDIA's hosted API catalog (build.nvidia.com / integrate.api.nvidia.com)
 serves 80+ models behind vLLM's OpenAI-compatible server, free with rate
 limits, via a free NVIDIA Developer Program key. Built on ``httpx`` (already
 a dependency), same as OpenRouterProvider, and used the same way: a second,
-independent free option for ``t1_simple`` in the fallback chain (see
-``config/settings.yaml`` -> ``fallbacks``) -- if OpenRouter's free catalog is
-down or rate-limited, this is tried next, before ever falling through to
-paid Sonnet.
+independent free option in the fallback chain (see ``config/settings.yaml``
+-> ``fallbacks``). For ``t1_simple`` specifically, NVIDIA is actually the
+*primary* provider (not the fallback) as of 2026-07-04 -- OpenRouter's free
+``google/gemma-4-31b-it:free`` was found live to be persistently
+rate-limited, so the two were swapped for that one tier; every other tier
+still has OpenRouter primary / NVIDIA fallback.
 
 Wire format per NVIDIA's own NIM API reference and the underlying vLLM
-OpenAI-compatible server docs (not yet confirmed against a live call in this
-environment -- no credentials here; verify once you have a key with
-``python -m scripts.milestone2 --check --tier t1_simple_nvidia``):
+OpenAI-compatible server docs, live-verified 2026-07-04 against a real
+NVIDIA_API_KEY (``python -m scripts.milestone2 --check --tier t1_simple``,
+or any other tier -- every free-mode tier's NVIDIA-backed hop was checked):
 
 - ``POST {base_url}/chat/completions``, ``Authorization: Bearer <key>``,
   standard OpenAI-shaped streaming (``choices[0].delta.content``,

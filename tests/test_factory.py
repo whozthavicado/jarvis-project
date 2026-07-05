@@ -20,8 +20,18 @@ def test_default_mode_builds_openrouter_for_t1_standard():
     assert provider.model == "nvidia/nemotron-3-nano-30b-a3b:free"
 
 
-def test_default_mode_builds_openrouter_for_t1_simple():
+def test_default_mode_builds_nvidia_for_t1_simple():
+    # t1_simple is NVIDIA-primary (not OpenRouter, unlike every other tier)
+    # since 2026-07-04: OpenRouter's google/gemma-4-31b-it:free was found
+    # live to be persistently rate-limited. See settings.yaml's comment.
     provider = build_provider(get_settings(), "t1_simple")
+    assert isinstance(provider, NvidiaProvider)
+    assert provider.model == "nvidia/nvidia-nemotron-nano-9b-v2"
+    assert provider.max_tokens == 1024
+
+
+def test_default_mode_builds_openrouter_for_t1_simple_openrouter_fallback():
+    provider = build_provider(get_settings(), "t1_simple_openrouter")
     assert isinstance(provider, OpenRouterProvider)
     assert provider.model == "google/gemma-4-31b-it:free"
     assert provider.max_tokens == 1024

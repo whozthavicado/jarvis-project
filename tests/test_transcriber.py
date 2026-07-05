@@ -117,6 +117,24 @@ async def test_default_low_energy_preserves_old_unconditional_behavior():
 
 
 @pytest.mark.asyncio
+async def test_tag_only_text_is_rejected_regardless_of_energy():
+    # A bracketed tag ("[XBOX SOUND]", "[MUSIC]") is unambiguous non-speech
+    # whether it came from a quiet or a loud segment -- unlike the blocklist,
+    # this check is never energy-gated.
+    w = _client_with("[XBOX SOUND]")
+    t = await w.transcribe(b"\xff\x7f" * 8000, low_energy=False)
+    assert t.rejected
+    assert t.reason == "hallucination_or_empty"
+
+
+@pytest.mark.asyncio
+async def test_punct_only_text_is_rejected_regardless_of_energy():
+    w = _client_with("...")
+    t = await w.transcribe(b"\xff\x7f" * 8000, low_energy=False)
+    assert t.rejected
+
+
+@pytest.mark.asyncio
 async def test_transcript_low_energy_field_round_trips():
     w = _client_with("turn on the lights")
     t = await w.transcribe(b"\x10\x00" * 8000, low_energy=False)

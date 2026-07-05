@@ -54,7 +54,10 @@ def test_anthropic_mode_table_preserved_as_upgrade_path():
 def test_free_fallback_map_pairs_every_openrouter_tier_with_its_nvidia_twin():
     s = get_settings()
     fb = s.fallbacks.free
-    assert fb.t1_simple == "t1_simple_nvidia"
+    # t1_simple is the one exception: NVIDIA is primary here (OpenRouter's
+    # google/gemma-4-31b-it:free was found persistently rate-limited live),
+    # so its fallback points to the (renamed) OpenRouter twin instead.
+    assert fb.t1_simple == "t1_simple_openrouter"
     assert fb.t1_standard == "t1_standard_nvidia"
     assert fb.t2_medium == "t2_medium_nvidia"
     assert fb.t3_complex == "t3_complex_nvidia"

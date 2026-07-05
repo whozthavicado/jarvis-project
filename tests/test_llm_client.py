@@ -168,11 +168,14 @@ def test_free_mode_t1_simple_chain_alternates_free_catalogs(monkeypatch):
 
     monkeypatch.delenv("TIER_MODE", raising=False)
     client = LLMClient(get_settings(), tier="t1_simple", circuit_breaker=CircuitBreaker())
-    # OpenRouter -> its NVIDIA twin -> the bigger OpenRouter tier -> its twin:
-    # four free models tried before the turn gives up, zero paid calls.
-    assert client._chain == ["t1_simple", "t1_simple_nvidia", "t1_standard", "t1_standard_nvidia"]
-    assert isinstance(client._providers["t1_simple"], OpenRouterProvider)
-    assert isinstance(client._provider_for("t1_simple_nvidia"), NvidiaProvider)
+    # NVIDIA -> its OpenRouter twin -> the bigger OpenRouter tier -> its twin:
+    # four free models tried before the turn gives up, zero paid calls. NVIDIA
+    # is primary here (not OpenRouter, unlike every other tier) since
+    # OpenRouter's google/gemma-4-31b-it:free was found persistently
+    # rate-limited live (2026-07-04) -- see settings.yaml's comment.
+    assert client._chain == ["t1_simple", "t1_simple_openrouter", "t1_standard", "t1_standard_nvidia"]
+    assert isinstance(client._providers["t1_simple"], NvidiaProvider)
+    assert isinstance(client._provider_for("t1_simple_openrouter"), OpenRouterProvider)
     assert isinstance(client._provider_for("t1_standard"), OpenRouterProvider)
 
 

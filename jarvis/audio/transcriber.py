@@ -71,16 +71,19 @@ class WhisperClient:
         return int(n_samples / self.sample_rate * 1000)
 
     def _is_hallucination(self, text: str, *, low_energy: bool = True) -> bool:
-        """The guard only applies when *low_energy* is True (ARCHITECTURE.md
-        §5.4: "...when VAD energy was low") -- a transcript from clearly
-        loud, high-energy audio isn't second-guessed against the
-        empty/punct/tag/blocklist checks. Defaults to True so any caller
+        """Empty/punctuation-only/bracketed-tag transcripts are always
+        rejected, regardless of energy -- they're unambiguous non-speech
+        markers (silence, or whisper tagging a real loud non-speech sound
+        like "[XBOX SOUND]"), not something a quiet room could produce that
+        a loud one couldn't. Only the literal blocklist match (ARCHITECTURE.md
+        §5.4: "...when VAD energy was low") is gated on *low_energy* --
+        phrases like "thank you"/"bye" are real things a user might actually
+        say at any volume, and are only suspicious as a whisper hallucination
+        artifact when the segment was quiet. Defaults to True so any caller
         that doesn't pass an energy signal keeps the old, unconditional
-        guard behavior unchanged; ``transcribe`` is the one real call site
-        updated to pass the pipeline's actual computed signal.
+        blocklist behavior unchanged; ``transcribe`` is the one real call
+        site updated to pass the pipeline's actual computed signal.
         """
-        if not low_energy:
-            return False
         t = text.strip().lower()
         if not t:
             return True
@@ -88,6 +91,8 @@ class WhisperClient:
             return True
         if _TAG_ONLY.match(t):
             return True
+        if not low_energy:
+            return False
         return t in self.blocklist
 
     async def health(self) -> bool:
