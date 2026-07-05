@@ -28,3 +28,4 @@ data/
 
 # Secrets — .env.example is the tracked template, the real .env never is
 .env
+apis.env

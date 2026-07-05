@@ -1,5 +1,7 @@
+"use client";
+
 import { Bot, Server, FolderKanban, User } from "lucide-react";
-import { useDashboardData } from "@/hooks/useDashboardData";
+import { useZeroBackend } from "@/hooks/useZeroBackend";
 import { Panel } from "./ui/Panel";
 import { ActivityEntry } from "@/lib/types";
 
@@ -17,7 +19,7 @@ function relativeTime(minutesAgo: number): string {
 }
 
 export function RealTimeActivity() {
-  const { activityFeed } = useDashboardData();
+  const { activityFeed } = useZeroBackend();
 
   return (
     <Panel label="Real-Time Activity">

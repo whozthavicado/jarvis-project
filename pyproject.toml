@@ -10,6 +10,7 @@ dependencies = [
     "httpx>=0.27",          # whisper-server HTTP client
     "pyyaml>=6.0",          # settings/grammar
     "anthropic>=0.110",     # Claude API (streaming chat)
+    "websockets>=12.0",     # dashboard live backend (jarvis/server.py)
 ]
 
 [project.optional-dependencies]

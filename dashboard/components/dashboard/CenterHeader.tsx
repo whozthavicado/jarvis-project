@@ -1,4 +1,24 @@
+"use client";
+
+import { useZeroBackend } from "@/hooks/useZeroBackend";
+
+const STATUS_LABEL: Record<string, string> = {
+  idle: "Intelligent Core Active",
+  thinking: "Z.E.R.O is thinking…",
+  speaking: "Z.E.R.O is speaking…",
+};
+
+const STATUS_DOT_CLASS: Record<string, string> = {
+  idle: "bg-zero-accent",
+  thinking: "bg-amber-400",
+  speaking: "bg-emerald-400",
+};
+
 export function CenterHeader() {
+  const { coreStatus } = useZeroBackend();
+  const dotClass = STATUS_DOT_CLASS[coreStatus] ?? STATUS_DOT_CLASS.idle;
+  const label = STATUS_LABEL[coreStatus] ?? STATUS_LABEL.idle;
+
   return (
     <div className="flex items-start justify-between">
       <div>
@@ -8,12 +28,12 @@ export function CenterHeader() {
         </p>
         <div className="mt-3 flex items-center gap-2">
           <span className="relative flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-zero-accent opacity-75" />
-            <span className="relative inline-flex h-2 w-2 rounded-full bg-zero-accent" />
+            <span
+              className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 ${dotClass}`}
+            />
+            <span className={`relative inline-flex h-2 w-2 rounded-full ${dotClass}`} />
           </span>
-          <span className="hud-label text-[10px] text-zero-accent">
-            Intelligent Core Active
-          </span>
+          <span className="hud-label text-[10px] text-zero-accent">{label}</span>
         </div>
       </div>
 

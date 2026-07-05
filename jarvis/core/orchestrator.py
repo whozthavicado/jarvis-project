@@ -64,15 +64,29 @@ budget reroutes above). Escalating specifically into t3_complex needs
 T2/T3 turns also get an unconditional up-front "On it." (ARCHITECTURE.md
 §5.4) instead of waiting on the 1.5s delayed-filler timer -- the two are
 mutually exclusive per turn so the ack is never spoken twice.
+
+The dashboard live-backend integration adds an optional ``broadcaster``
+(:class:`jarvis.core.broadcast.Broadcaster`, see docs/superpowers/specs/
+2026-07-04-zero-live-backend-integration-design.md): when supplied, an
+LLM-bound turn publishes a "thinking" -> "speaking" -> "idle" status
+sequence plus a "User"/"Z.E.R.O" activity pair, so jarvis/server.py's
+WebSocket clients (the dashboard) see live status/activity regardless of
+whether the turn came from typed dashboard chat or spoken voice input --
+both go through this same function. T0 and offline turns don't publish
+anything (same scoping as ``speak_filler``/the immediate ack -- they're
+synchronous, there's no "thinking" to report). Without a ``broadcaster``,
+behavior is unchanged.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional, Union
 
 from jarvis.audio import Transcript, transcripts
 from jarvis.config import Settings, get_settings
+from jarvis.core.broadcast import Broadcaster
 from jarvis.core.budget import BudgetGuard, CONFIRM_TIERS, get_budget_guard
 from jarvis.core.offline import ConnectivityMonitor, get_connectivity_monitor
 from jarvis.core.session import Session
@@ -153,6 +167,10 @@ async def _speak_filler_if_slow(first_token: asyncio.Event, speak: Callable[[str
         speak(_FILLER_TEXT)
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _is_connection_error(exc: Exception) -> bool:
     """Transport-level failure = evidence we're offline (§5.1's last rung)."""
     import anthropic
@@ -204,6 +222,7 @@ async def handle_turn(
     budget_confirm: Optional[BudgetConfirmFn] = None,
     speak_filler: Optional[Callable[[str], None]] = None,
     escalation_confirm: Optional[EscalationConfirmFn] = None,
+    broadcaster: Optional[Broadcaster] = None,
 ) -> Optional[TurnResult]:
     """Process one user turn against *session*, streaming the reply to on_text.
 
@@ -247,6 +266,11 @@ async def handle_turn(
     other hop needs no confirmation. Capped at one hop per turn by
     construction: the retried result is never checked for a second
     ``<ESCALATE>``.
+
+    ``broadcaster``, when supplied, publishes "thinking"/"speaking"/"idle"
+    status events plus a "User"/"Z.E.R.O" activity pair for the dashboard
+    (see :class:`jarvis.core.broadcast.Broadcaster`) -- scoped to the
+    LLM-bound path only, same as ``speak_filler``.
     """
     t0_call = match_t0(transcript.text)
     if t0_call is not None:
@@ -259,6 +283,12 @@ async def handle_turn(
         return TurnResult(text=_OFFLINE_NOTICE, model="offline", stop_reason="offline")
 
     session.add_user_turn(transcript.text)
+
+    if broadcaster is not None:
+        broadcaster.publish({"type": "status", "state": "thinking"})
+        broadcaster.publish(
+            {"type": "activity", "actor": "User", "description": transcript.text, "timestamp": _now_iso()}
+        )
 
     if router is not None:
         tier = await router.resolve(transcript.text)
@@ -300,6 +330,8 @@ async def handle_turn(
         def tracked_on_text(chunk: str) -> None:
             if not first_token.is_set():
                 first_token.set()
+                if broadcaster is not None:
+                    broadcaster.publish({"type": "status", "state": "speaking"})
             on_text(chunk)
 
         filler_task = (
@@ -322,6 +354,8 @@ async def handle_turn(
             if offline is not None and _is_connection_error(exc):
                 offline.mark_offline()
             on_text(_fallback_text_for(exc))
+            if broadcaster is not None:
+                broadcaster.publish({"type": "status", "state": "idle"})
             return None
 
     result = await _run_stream(turn_llm, system_prompt)
@@ -346,6 +380,11 @@ async def handle_turn(
 
     if result.refused or not result.text:
         on_text("I'd rather not answer that.")
+        if broadcaster is not None:
+            broadcaster.publish(
+                {"type": "activity", "actor": "Z.E.R.O", "description": "I'd rather not answer that.", "timestamp": _now_iso()}
+            )
+            broadcaster.publish({"type": "status", "state": "idle"})
         return result
 
     if budget is not None:
@@ -353,6 +392,11 @@ async def handle_turn(
 
     session.add_assistant_turn(result.text)
     await session.compact_if_needed()
+    if broadcaster is not None:
+        broadcaster.publish(
+            {"type": "activity", "actor": "Z.E.R.O", "description": result.text, "timestamp": _now_iso()}
+        )
+        broadcaster.publish({"type": "status", "state": "idle"})
     return result
 
 
@@ -361,6 +405,10 @@ async def converse(
     tier: str = "t1_standard",
     on_turn: Optional[Callable[[Transcript, Optional[TurnResult]], None]] = None,
     route: bool = True,
+    session: Optional[Session] = None,
+    llm: Optional[LLMClient] = None,
+    router: Optional[Router] = None,
+    broadcaster: Optional[Broadcaster] = None,
 ) -> None:
     """Run the live listen -> reply -> speak loop until cancelled.
 
@@ -374,11 +422,20 @@ async def converse(
         route: when True (default), each turn is routed independently across
             T1-T3 by a :class:`jarvis.routing.Router` (ARCHITECTURE.md §2).
             Set False to pin the whole conversation to *tier*, as before M2.
+        session, llm, router: pass a pre-built instance of any of these to
+            share it with another caller -- jarvis/server.py's WebSocket
+            handler does this so a typed dashboard message and spoken voice
+            input write to the *same* Session/MemoryStore and see the same
+            Router. Any left as None are built internally exactly as before
+            this param existed (session/llm from *tier*, router from
+            *route*), so a caller that passes none of these sees zero
+            behavior change.
+        broadcaster: forwarded to every ``handle_turn`` call -- see there.
     """
     s = settings or get_settings()
-    session = Session(tier=tier, store=get_store(s))
-    llm = LLMClient(s, tier=tier)
-    router = Router(s) if route else None
+    session = session if session is not None else Session(tier=tier, store=get_store(s))
+    llm = llm if llm is not None else LLMClient(s, tier=tier)
+    router = router if router is not None else (Router(s) if route else None)
     budget = get_budget_guard(s)
     offline = get_connectivity_monitor(s)
 
@@ -394,6 +451,7 @@ async def converse(
                     budget=budget,
                     offline=offline,
                     speak_filler=speaker.feed,
+                    broadcaster=broadcaster,
                 )
                 await speaker.flush()
                 if on_turn is not None:
