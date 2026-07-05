@@ -70,6 +70,16 @@ async def test_real_speech_passes_through():
         "[blank_audio]",
         "(silence)",
         "[SOUND]",
+        "thank you for watching",
+        "please subscribe",
+        "like and subscribe",
+        "www.opensubtitles.org",
+        "bye",
+        "goodbye",
+        "[laughs]",
+        "(inaudible)",
+        "[music - 1]",
+        "[speaker's note]",
     ],
 )
 async def test_hallucinations_are_rejected(bogus):

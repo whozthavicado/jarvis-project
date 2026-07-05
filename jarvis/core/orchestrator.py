@@ -33,11 +33,16 @@ closed out (Haiku summary + sessions.ended_at) when the listen loop ends.
 M3-full adds the daily budget guard (ARCHITECTURE.md §5.5) via an optional
 ``budget``. Hard cap hit: the turn is forced onto ``t1_simple`` (the $0
 tier) if a router is available to do that rerouting, and a spoken notice
-leads the reply. Soft cap hit on a T2+ tier: the turn proceeds on its
-resolved tier, but with a spoken heads-up first -- there's no voice
-confirmation channel yet, so "requires confirmation" is implemented here as
-"is surfaced audibly", not a yes/no gate. Without a ``budget``, behavior is
-unchanged (unlimited), which is what every pre-M3-full test still exercises.
+leads the reply. Soft cap hit on a T2+ tier: without a ``budget_confirm``
+callback, the turn proceeds on its resolved tier with a spoken heads-up
+first (pre-hardening-round-2 behavior, still the default). With one, it's
+awaited and a decline downgrades the turn to ``t1_simple`` (same rerouting
+as the hard cap) instead of just narrating the notice -- see
+``budget_confirm`` below. There is still no voice yes/no channel wired into
+``converse``'s live loop (same gap as ``tool_confirm``): a caller has to
+supply their own callback to actually exercise the decline path outside
+tests. Without a ``budget``, behavior is unchanged (unlimited), which is
+what every pre-M3-full test still exercises.
 
 Hardening adds offline mode (ARCHITECTURE.md §5.1's last rung) via an
 optional ``offline`` ConnectivityMonitor. A T0 grammar match still runs --
@@ -50,7 +55,9 @@ TTL expires and a probe succeeds. Without ``offline``, behavior is unchanged.
 """
 from __future__ import annotations
 
-from typing import Callable, Optional
+import asyncio
+import contextlib
+from typing import Awaitable, Callable, Optional, Union
 
 from jarvis.audio import Transcript, transcripts
 from jarvis.config import Settings, get_settings
@@ -66,8 +73,41 @@ from jarvis.tools.registry import ConfirmFn
 
 _HARD_CAP_NOTICE = "Running in reduced mode — today's budget is used up: "
 _SOFT_CAP_NOTICE = "Heads up, we're near today's budget for the heavier models — continuing anyway: "
+_SOFT_CAP_DECLINE_NOTICE = "Declined — sticking with a lighter model for this one: "
 _BUDGET_FALLBACK_TIER = "t1_simple"
 _OFFLINE_NOTICE = "I'm offline — I can still control the Mac."
+_FILLER_TEXT = "On it."
+_FILLER_DELAY_S = 1.5
+
+BudgetConfirmFn = Callable[[str], Union[bool, Awaitable[bool]]]
+
+
+async def _resolve_budget_confirm(confirm: Optional[BudgetConfirmFn], tier: str) -> bool:
+    """Ask *confirm* whether to proceed on *tier* past the soft cap.
+
+    Defaults to auto-approve (unlike the destructive-tool gate's fail-closed
+    default) so today's "notice + continue" behavior is unchanged for every
+    caller that doesn't supply a callback.
+    """
+    if confirm is None:
+        return True
+    outcome = confirm(tier)
+    if asyncio.iscoroutine(outcome):
+        outcome = await outcome
+    return bool(outcome)
+
+
+async def _speak_filler_if_slow(first_token: asyncio.Event, speak: Callable[[str], None]) -> None:
+    """Speak a filler if no first token arrives within _FILLER_DELAY_S.
+
+    Speaks straight to *speak* (e.g. Speaker.feed), never through on_text --
+    the filler must never be logged into session history or counted as part
+    of the streamed reply.
+    """
+    try:
+        await asyncio.wait_for(first_token.wait(), timeout=_FILLER_DELAY_S)
+    except asyncio.TimeoutError:
+        speak(_FILLER_TEXT)
 
 
 def _is_connection_error(exc: Exception) -> bool:
@@ -118,6 +158,8 @@ async def handle_turn(
     router: Optional[Router] = None,
     budget: Optional[BudgetGuard] = None,
     offline: Optional[ConnectivityMonitor] = None,
+    budget_confirm: Optional[BudgetConfirmFn] = None,
+    speak_filler: Optional[Callable[[str], None]] = None,
 ) -> Optional[TurnResult]:
     """Process one user turn against *session*, streaming the reply to on_text.
 
@@ -134,6 +176,16 @@ async def handle_turn(
     which tier and LLMClient handle this specific turn — ``llm`` is then only
     used as history's tier-agnostic bookkeeping; per M2 (ARCHITECTURE.md
     §2), routing runs fresh every turn, not once per session.
+
+    ``budget_confirm``, when supplied, gates T2+ requests once the soft cap
+    is hit — decline downgrades the turn to ``t1_simple`` (when a router is
+    available) instead of merely narrating the notice. Without a callback,
+    behavior is unchanged: a spoken heads-up, turn proceeds on its resolved
+    tier.
+
+    ``speak_filler``, when supplied, speaks "On it." if the LLM call's first
+    token hasn't arrived within 1.5s -- scoped to the LLM path only; T0 and
+    offline turns are synchronous and never start a filler task.
     """
     t0_call = match_t0(transcript.text)
     if t0_call is not None:
@@ -165,18 +217,42 @@ async def handle_turn(
                 turn_llm = router.llm_for(tier)
                 system_prompt = router.system_prompt_for(tier)
         elif budget.needs_confirmation(tier):
-            notice = _SOFT_CAP_NOTICE
+            if await _resolve_budget_confirm(budget_confirm, tier):
+                notice = _SOFT_CAP_NOTICE
+            else:
+                notice = _SOFT_CAP_DECLINE_NOTICE
+                if router is not None and tier != _BUDGET_FALLBACK_TIER:
+                    tier = _BUDGET_FALLBACK_TIER
+                    turn_llm = router.llm_for(tier)
+                    system_prompt = router.system_prompt_for(tier)
 
     if notice:
         on_text(notice)
 
+    first_token = asyncio.Event()
+
+    def tracked_on_text(chunk: str) -> None:
+        if not first_token.is_set():
+            first_token.set()
+        on_text(chunk)
+
+    filler_task = (
+        asyncio.ensure_future(_speak_filler_if_slow(first_token, speak_filler))
+        if speak_filler is not None
+        else None
+    )
     try:
-        result = await turn_llm.stream_reply(system_prompt, session.messages, on_text)
+        result = await turn_llm.stream_reply(system_prompt, session.messages, tracked_on_text)
     except Exception as exc:  # noqa: BLE001 - deliberately broad; see _fallback_text_for
         if offline is not None and _is_connection_error(exc):
             offline.mark_offline()
         on_text(_fallback_text_for(exc))
         return None
+    finally:
+        first_token.set()
+        if filler_task is not None:
+            with contextlib.suppress(Exception):
+                await filler_task
 
     if result.refused or not result.text:
         on_text("I'd rather not answer that.")
@@ -227,6 +303,7 @@ async def converse(
                     router=router,
                     budget=budget,
                     offline=offline,
+                    speak_filler=speaker.feed,
                 )
                 await speaker.flush()
                 if on_turn is not None:

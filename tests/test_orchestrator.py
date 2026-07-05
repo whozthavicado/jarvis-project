@@ -1,12 +1,15 @@
 """Orchestrator tests — handle_turn's success/failure/refusal paths and the
 error -> spoken-fallback classification. No real LLM or audio involved.
 """
+import asyncio
+
 import httpx
 import pytest
 import anthropic
 
 from jarvis.audio.types import Transcript
 from jarvis.core.budget import BudgetGuard
+from jarvis.core.offline import ConnectivityMonitor
 from jarvis.core.orchestrator import _fallback_text_for, handle_turn
 from jarvis.core.session import Session
 from jarvis.llm.providers import OpenRouterError
@@ -292,3 +295,203 @@ async def test_budget_records_spend_after_a_successful_turn():
     await handle_turn(session, llm, Transcript(text="hello"), lambda _: None, budget=budget)
 
     assert budget.spent_usd >= 0.0  # _ok_result carries no usage, but record() must not raise
+
+
+@pytest.mark.asyncio
+async def test_soft_cap_decline_downgrades_tier_to_t1_simple():
+    session = Session(tier="t1_standard")
+    t2_llm = _StubLLM(result=_ok_result("expensive reply"))
+    t1_simple_llm = _StubLLM(result=_ok_result("cheap reply"))
+    router = _MultiTierStubRouter(
+        resolved_tier="t2_medium", llms={"t2_medium": t2_llm, "t1_simple": t1_simple_llm}
+    )
+    budget = BudgetGuard(soft_daily_usd=0.0, hard_daily_usd=1000.0)
+    seen = []
+
+    result = await handle_turn(
+        session,
+        t2_llm,
+        Transcript(text="plan this out"),
+        seen.append,
+        router=router,
+        budget=budget,
+        budget_confirm=lambda tier: False,
+    )
+
+    assert result.text == "cheap reply"
+    assert seen[0].startswith("Declined")
+    assert t2_llm.calls == []
+    assert len(t1_simple_llm.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_soft_cap_decline_without_router_leaves_tier_unchanged():
+    session = Session(tier="t1_standard")
+    llm = _StubLLM(result=_ok_result("still using this tier"))
+    llm.tier = "t2_medium"
+    budget = BudgetGuard(soft_daily_usd=0.0, hard_daily_usd=1000.0)
+    seen = []
+
+    result = await handle_turn(
+        session,
+        llm,
+        Transcript(text="plan this out"),
+        seen.append,
+        budget=budget,
+        budget_confirm=lambda tier: False,
+    )
+
+    assert result.text == "still using this tier"
+    assert seen[0].startswith("Declined")
+    assert len(llm.calls) == 1  # no router to reroute to -- same tier still used
+
+
+@pytest.mark.asyncio
+async def test_budget_confirm_supports_async_callables():
+    session = Session(tier="t1_standard")
+    t2_llm = _StubLLM(result=_ok_result("expensive reply"))
+    t1_simple_llm = _StubLLM(result=_ok_result("cheap reply"))
+    router = _MultiTierStubRouter(
+        resolved_tier="t2_medium", llms={"t2_medium": t2_llm, "t1_simple": t1_simple_llm}
+    )
+    budget = BudgetGuard(soft_daily_usd=0.0, hard_daily_usd=1000.0)
+
+    async def decline(tier: str) -> bool:
+        return False
+
+    result = await handle_turn(
+        session,
+        t2_llm,
+        Transcript(text="plan this out"),
+        lambda _: None,
+        router=router,
+        budget=budget,
+        budget_confirm=decline,
+    )
+
+    assert result.text == "cheap reply"
+    assert len(t1_simple_llm.calls) == 1
+
+
+class _SlowStubLLM:
+    """Like _StubLLM, but sleeps before emitting the first token."""
+
+    def __init__(self, result: TurnResult, delay_s: float):
+        self._result = result
+        self._delay_s = delay_s
+        self.calls = []
+        self.tier = "t1_standard"
+
+    async def stream_reply(self, system_prompt, messages, on_text):
+        self.calls.append((system_prompt, messages))
+        await asyncio.sleep(self._delay_s)
+        on_text(self._result.text)
+        return self._result
+
+
+@pytest.mark.asyncio
+async def test_slow_first_token_speaks_filler_before_reply(monkeypatch):
+    import jarvis.core.orchestrator as orchestrator_mod
+
+    monkeypatch.setattr(orchestrator_mod, "_FILLER_DELAY_S", 0.01)
+    session = Session(tier="t1_standard")
+    llm = _SlowStubLLM(_ok_result("the real reply"), delay_s=0.05)
+    seen = []
+    spoken = []
+
+    result = await handle_turn(
+        session, llm, Transcript(text="hello"), seen.append, speak_filler=spoken.append
+    )
+
+    assert result.text == "the real reply"
+    assert spoken == ["On it."]
+    assert seen == ["the real reply"]
+    # filler never lands in session history
+    assert all("On it." not in m.text for m in session.history)
+
+
+@pytest.mark.asyncio
+async def test_fast_first_token_never_speaks_filler(monkeypatch):
+    import jarvis.core.orchestrator as orchestrator_mod
+
+    monkeypatch.setattr(orchestrator_mod, "_FILLER_DELAY_S", 1.5)
+    session = Session(tier="t1_standard")
+    llm = _StubLLM(result=_ok_result("fast reply"))
+    seen = []
+    spoken = []
+
+    result = await handle_turn(
+        session, llm, Transcript(text="hello"), seen.append, speak_filler=spoken.append
+    )
+
+    assert result.text == "fast reply"
+    assert spoken == []
+
+
+@pytest.mark.asyncio
+async def test_no_speak_filler_param_is_backward_compatible():
+    session = Session(tier="t1_standard")
+    llm = _StubLLM(result=_ok_result("hi"))
+    seen = []
+
+    result = await handle_turn(session, llm, Transcript(text="hello"), seen.append)
+
+    assert result.text == "hi"
+    assert seen == ["hi"]
+
+
+@pytest.mark.asyncio
+async def test_t0_never_starts_a_filler_task(monkeypatch):
+    import jarvis.core.orchestrator as orchestrator_mod
+    from dataclasses import replace
+
+    from jarvis.tools import registry
+
+    monkeypatch.setattr(orchestrator_mod, "_FILLER_DELAY_S", 0.01)
+    session = Session(tier="t1_standard")
+    llm = _StubLLM(result=_ok_result())
+    spoken = []
+
+    async def fake_what_time(args):
+        return "It's four o'clock PM."
+
+    fake_tool = replace(registry._REGISTRY["what_time"], handler=fake_what_time)
+    monkeypatch.setitem(registry._REGISTRY, "what_time", fake_tool)
+
+    await handle_turn(
+        session,
+        llm,
+        Transcript(text="what time is it"),
+        lambda _: None,
+        speak_filler=spoken.append,
+    )
+
+    await asyncio.sleep(0.05)  # give a filler task a chance to fire if one were wrongly started
+    assert spoken == []
+
+
+@pytest.mark.asyncio
+async def test_offline_never_starts_a_filler_task(monkeypatch):
+    import jarvis.core.orchestrator as orchestrator_mod
+
+    monkeypatch.setattr(orchestrator_mod, "_FILLER_DELAY_S", 0.01)
+    session = Session(tier="t1_standard")
+    llm = _StubLLM(result=_ok_result())
+
+    async def always_offline():
+        return False
+
+    offline = ConnectivityMonitor(probe=always_offline)
+    spoken = []
+
+    await handle_turn(
+        session,
+        llm,
+        Transcript(text="hello"),
+        lambda _: None,
+        offline=offline,
+        speak_filler=spoken.append,
+    )
+
+    await asyncio.sleep(0.05)
+    assert spoken == []

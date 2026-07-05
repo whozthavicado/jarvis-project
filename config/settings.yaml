@@ -22,9 +22,20 @@ whisper:
   # Whisper hallucination artifacts to discard on low-energy segments.
   hallucination_blocklist:
     - "thank you."
+    - "thank you"
+    - "thank you for watching"
     - "thanks for watching!"
+    - "thanks for watching"
+    - "please subscribe"
+    - "like and subscribe"
+    - "don't forget to subscribe"
     - "subtitles by the amara.org community"
+    - "www.opensubtitles.org"
     - "you"
+    - "bye"
+    - "bye bye"
+    - "goodbye"
+    - "the following is a paid advertisement"
   # §5.4 watchdog: health-check the server on an interval, restart it when it
   # stops answering. restart_cmd is repo-relative unless absolute; set it to
   # null to disable auto-restart (health checks then only log). The restart
